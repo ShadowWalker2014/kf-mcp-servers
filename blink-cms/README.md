@@ -1,110 +1,76 @@
-# Blink MCP Server
+# blink-cms
 
-Unified MCP (Model Context Protocol) server for Blink tools.
+HTTP MCP server for Blink.new CMS management and web tools. Manage docs and blog content on blink.new, plus web search and URL fetching.
 
 ## Tools
 
-### CMS Tools (17 tools)
-Content management for docs and blog articles.
+### CMS tools
 
 | Tool | Description |
 |------|-------------|
-| `cms_list_dir` | List content in a directory |
-| `cms_read_file` | Read content file (draft or published) |
-| `cms_write_file` | Create or update content |
-| `cms_search_replace` | Find and replace with diff |
-| `cms_multi_edit` | Atomic multi-edit operation |
-| `cms_delete_file` | Move to trash |
-| `cms_restore_file` | Restore from trash |
-| `cms_list_trash` | List deleted content |
-| `cms_search` | Search content |
-| `cms_grep` | Fuzzy search with excerpts |
-| `cms_publish` | Publish content (creates version) |
-| `cms_unpublish` | Hide from website |
-| `cms_discard_draft` | Revert to published version |
-| `cms_list_drafts` | List unpublished changes |
-| `cms_get_versions` | Get version history |
-| `cms_activate_version` | Rollback to version |
-| `cms_read_version` | Read historical version |
+| `cms_list_dir` | List files and folders in a CMS directory |
+| `cms_read_file` | Read a CMS file's content |
+| `cms_write_file` | Write/create a CMS file (optionally publish) |
+| `cms_search_replace` | Find and replace text in a CMS file |
+| `cms_delete_file` | Move a file to trash |
+| `cms_restore_file` | Restore a file from trash |
+| `cms_list_trash` | List trashed files |
+| `cms_multi_edit` | Apply multiple search/replace edits in one call |
+| `cms_search` | Full-text search across CMS content |
+| `cms_grep` | Grep CMS content with cropped output |
+| `cms_publish` | Publish one or more draft files |
+| `cms_unpublish` | Unpublish published files |
+| `cms_discard_draft` | Discard unpublished draft changes |
+| `cms_list_drafts` | List files with unpublished changes |
+| `cms_get_versions` | List version history for a file |
+| `cms_activate_version` | Restore a file to a previous version |
+| `cms_read_version` | Read the content of a specific version |
 
-### Web Tools (3 tools)
-Web search and content fetching.
+### Web tools
 
 | Tool | Description |
 |------|-------------|
-| `web_search` | Search the web using Exa AI |
-| `fetch_url` | Fetch and extract clean text from any URL |
-| `google_serp` | Get Google SERP data for SEO analysis |
+| `web_search` | Search the web via Exa AI |
+| `fetch_url` | Fetch and parse a URL's content as markdown |
+| `google_serp` | Google search results via ValueSerp |
 
-## Setup
+## Auth
 
-```bash
-bun install
-bun run build
-```
+| Header | Purpose |
+|--------|---------|
+| `Authorization: Bearer <key>` | MCP server auth (`MCP_API_KEY`) — same key used for CMS API |
 
-## Environment Variables
+## Environment variables
 
-```bash
-# CMS API
-CMS_API_URL=https://blink.new/api/cms
-CMS_API_KEY=your-cms-api-key
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `MCP_API_KEY` | Yes | Auth key for both MCP access and CMS API calls |
+| `CMS_API_URL` | No | CMS API base URL (defaults to `https://blink.new/api/cms`) |
+| `EXA_API_KEY` | No | Required for `web_search` tool |
+| `VALUE_SERP_API_KEY` | No | Required for `google_serp` tool |
+| `PORT` | No | Defaults to `3100` |
 
-# Web Tools
-EXA_API_KEY=your-exa-api-key
-VALUE_SERP_API_KEY=your-valueserp-api-key
-
-# Server Auth
-MCP_API_KEY=your-mcp-api-key
-```
-
-## Usage
-
-### HTTP Server (Railway/Production)
-```bash
-bun run start
-# Server runs on http://localhost:3100
-```
-
-### Stdio Server (Local/Cursor)
-```bash
-bun run start:stdio
-```
-
-### With Cursor
-
-Add to `.cursor/mcp.json`:
+## Cursor config
 
 ```json
-{
-  "mcpServers": {
-    "blink-cms": {
-      "command": "bun",
-      "args": ["run", "/path/to/blink-cms/dist/index.js"],
-      "env": {
-        "CMS_API_URL": "https://blink.new/api/cms",
-        "CMS_API_KEY": "your-key",
-        "EXA_API_KEY": "your-exa-key",
-        "VALUE_SERP_API_KEY": "your-serp-key"
-      }
-    }
+"blink-cms": {
+  "url": "https://blink-cms.up.railway.app/mcp",
+  "headers": {
+    "Authorization": "Bearer <MCP_API_KEY>"
   }
 }
 ```
 
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check with tool list |
-| `/mcp` | POST | MCP protocol endpoint |
-
-## Development
+## Local dev
 
 ```bash
-# HTTP server with hot reload
-bun run dev:http
-
-# Stdio server
-bun run dev
+npm install
+MCP_API_KEY=secret CMS_API_URL=https://blink.new/api/cms npm run dev:http
 ```
+
+Health check: `GET http://localhost:3100/health`
+
+## Railway deployment
+
+- **Root Directory**: `blink-cms/`
+- **Env vars**: `MCP_API_KEY` (required), `CMS_API_URL`, `EXA_API_KEY`, `VALUE_SERP_API_KEY`
