@@ -9,1183 +9,640 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import Stripe from "stripe";
 
-// Parse command line arguments
-function parseArgs() {
- const args = process.argv.slice(2);
- const config: {
- apiKey?: string;
- publishableKey?: string;
- webhookSecret?: string;
- tools?: string;
- transport?: 'stdio' | 'http';
- port?: number;
- } = {};
+const FALLBACK_STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const TRANSPORT_TYPE = process.env.TRANSPORT_TYPE || 'stdio';
+const PORT = parseInt(process.env.PORT || '8080', 10);
 
- for (let i = 0; i < args.length; i++) {
- const arg = args[i];
- if (arg.startsWith('--api-key=')) {
- config.apiKey = arg.split('=')[1];
- } else if (arg === '--api-key' && i + 1 < args.length) {
- config.apiKey = args[++i];
- } else if (arg.startsWith('--publishable-key=')) {
- config.publishableKey = arg.split('=')[1];
- } else if (arg === '--publishable-key' && i + 1 < args.length) {
- config.publishableKey = args[++i];
- } else if (arg.startsWith('--webhook-secret=')) {
- config.webhookSecret = arg.split('=')[1];
- } else if (arg === '--webhook-secret' && i + 1 < args.length) {
- config.webhookSecret = args[++i];
- } else if (arg.startsWith('--tools=')) {
- config.tools = arg.split('=')[1];
- } else if (arg === '--tools' && i + 1 < args.length) {
- config.tools = args[++i];
- } else if (arg.startsWith('--transport=')) {
- config.transport = arg.split('=')[1] as 'stdio' | 'http';
- } else if (arg === '--transport' && i + 1 < args.length) {
- config.transport = args[++i] as 'stdio' | 'http';
- } else if (arg.startsWith('--port=')) {
- config.port = parseInt(arg.split('=')[1], 10);
- } else if (arg === '--port' && i + 1 < args.length) {
- config.port = parseInt(args[++i], 10);
- }
- }
-
- return config;
-}
-
-const cliArgs = parseArgs();
-
-// Get configuration from CLI args or environment variables
-const FALLBACK_STRIPE_SECRET_KEY = cliArgs.apiKey || process.env.STRIPE_SECRET_KEY;
-const STRIPE_PUBLISHABLE_KEY = cliArgs.publishableKey || process.env.STRIPE_PUBLISHABLE_KEY;
-const STRIPE_WEBHOOK_SECRET = cliArgs.webhookSecret || process.env.STRIPE_WEBHOOK_SECRET;
-const TRANSPORT_TYPE = cliArgs.transport || process.env.TRANSPORT_TYPE || 'stdio';
-const PORT = cliArgs.port || parseInt(process.env.PORT || '8080', 10);
-
-// For stdio mode, require the API key upfront
 if (TRANSPORT_TYPE === 'stdio' && !FALLBACK_STRIPE_SECRET_KEY) {
- console.error("Stripe API key is required for stdio mode. Provide it via --api-key argument or STRIPE_SECRET_KEY environment variable");
- process.exit(1);
+  console.error("STRIPE_SECRET_KEY is required for stdio mode");
+  process.exit(1);
 }
 
-// For HTTP mode, we don't require API key upfront - users provide it per request
-
-// Create Stripe client factory function
-function createStripeClient(apiKey: string) {
- return new Stripe(apiKey, {
- apiVersion: '2025-05-28.basil',
- typescript: true
- });
+function createStripeClient(apiKey: string): Stripe {
+  return new Stripe(apiKey, { apiVersion: '2025-05-28.basil', typescript: true });
 }
 
-// For stdio mode, create default client
 const defaultStripe = FALLBACK_STRIPE_SECRET_KEY ? createStripeClient(FALLBACK_STRIPE_SECRET_KEY) : null;
 
-// Create MCP server factory function
-function createMcpServer(stripeClient: Stripe) {
- const server = new McpServer({
- name: "stripe-mcp-server",
- version: "1.0.0"
- });
+// ─── Tool definitions ──────────────────────────────────────────────────────────
 
- // Add all the Stripe tools using the provided client
- addStripeTools(server, stripeClient);
- return server;
-}
-
-// Function to add all Stripe tools to a server
 function addStripeTools(server: McpServer, stripe: Stripe) {
- // Helper function to handle errors consistently
- function handleError(error: unknown): { success: false; error: string } {
- console.error('Stripe MCP Server Error:', error);
- return { 
- success: false, 
- error: error instanceof Error ? error.message : String(error) 
- };
- }
+  function ok(data: unknown, message?: string) {
+    return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, ...(message ? { message } : {}), ...( data !== null ? { data } : {}) }, null, 2) }] };
+  }
+  function err(e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { content: [{ type: "text" as const, text: JSON.stringify({ success: false, error: msg }, null, 2) }] };
+  }
 
-// Stripe Connect Tool
-server.tool(
- "stripe_connect",
- {
- purpose: z.string().describe("Explanation of why Stripe connection is needed for this specific feature or use case"),
- features: z.array(z.string()).describe("List of Stripe features that will be used (e.g., 'payments', 'subscriptions', 'products', 'customers', 'webhooks')")
- },
- async ({ purpose, features }) => {
- return {
- content: [{
- type: "text",
- text: `Stripe connection requested for: ${purpose}\nFeatures needed: ${features.join(', ')}\n\nPlease ensure the following environment variables are set:\n- STRIPE_SECRET_KEY\n- STRIPE_PUBLISHABLE_KEY (optional)\n- STRIPE_WEBHOOK_SECRET (optional)`
- }]
- };
- }
-);
+  // ── Customers ──────────────────────────────────────────────────────────────
 
-// Stripe Products Tool
-server.tool(
- "stripe_products",
- {
- action: z.enum(['create', 'list', 'retrieve', 'update', 'archive']).describe("The action to perform on products"),
- product_id: z.string().optional().describe("Product ID (required for retrieve, update, archive actions)"),
- name: z.string().optional().describe("Product name (required for create, optional for update)"),
- description: z.string().optional().describe("Product description (optional)"),
- images: z.array(z.string()).optional().describe("Array of image URLs (optional)"),
- metadata: z.string().optional().describe("JSON string of key-value metadata object (optional, e.g., '{\"category\":\"premium\"}')"),
- active: z.boolean().optional().describe("Whether the product is active (optional, for update)")
- },
- async ({ action, product_id, name, description, images, metadata, active }) => {
- try {
- // Parse metadata if provided
- let parsedMetadata: Record | undefined;
- if (metadata) {
- try {
- parsedMetadata = JSON.parse(metadata);
- } catch (error) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Invalid metadata JSON format' }, null, 2)
- }]
- };
- }
- }
- 
- switch (action) {
- case 'create':
- if (!name) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Product name is required for create action' }, null, 2)
- }]
- };
- }
- 
- const createParams: any = { name };
- if (description) createParams.description = description;
- if (images) createParams.images = images;
- if (parsedMetadata) createParams.metadata = parsedMetadata;
- 
- const product = await stripe.products.create(createParams);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- product,
- message: `Successfully created product: ${product.name}`
- }, null, 2)
- }]
- };
- 
- case 'list':
- const products = await stripe.products.list({ limit: 100 });
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- products: products.data,
- message: `Found ${products.data.length} product(s)`
- }, null, 2)
- }]
- };
- 
- case 'retrieve':
- if (!product_id) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Product ID is required for retrieve action' }, null, 2)
- }]
- };
- }
- 
- const retrievedProduct = await stripe.products.retrieve(product_id);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- product: retrievedProduct,
- message: `Retrieved product: ${retrievedProduct.name}`
- }, null, 2)
- }]
- };
- 
- case 'update':
- if (!product_id) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Product ID is required for update action' }, null, 2)
- }]
- };
- }
- 
- const updateParams: any = {};
- if (name) updateParams.name = name;
- if (description !== undefined) updateParams.description = description;
- if (images) updateParams.images = images;
- if (parsedMetadata) updateParams.metadata = parsedMetadata;
- if (active !== undefined) updateParams.active = active;
- 
- const updatedProduct = await stripe.products.update(product_id, updateParams);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- product: updatedProduct,
- message: `Successfully updated product: ${updatedProduct.name}`
- }, null, 2)
- }]
- };
- 
- case 'archive':
- if (!product_id) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Product ID is required for archive action' }, null, 2)
- }]
- };
- }
- 
- const archivedProduct = await stripe.products.update(product_id, { active: false });
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- product: archivedProduct,
- message: `Successfully archived product: ${archivedProduct.name}`
- }, null, 2)
- }]
- };
- 
- default:
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: `Unknown action: ${action}` }, null, 2)
- }]
- };
- }
- } catch (error) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify(handleError(error), null, 2)
- }]
- };
- }
- }
-);
+  server.tool("stripe_customers",
+    "Manage Stripe customers. Actions: create, retrieve, update, delete, list, search. Use search with email to find a customer by email address.",
+    {
+      action: z.enum(['create', 'retrieve', 'update', 'delete', 'list', 'search']),
+      customer_id: z.string().optional().describe("Customer ID (required for retrieve, update, delete)"),
+      email: z.string().optional().describe("Email address (for create/update, or search query)"),
+      name: z.string().optional().describe("Customer full name"),
+      description: z.string().optional().describe("Internal description"),
+      phone: z.string().optional().describe("Phone number"),
+      metadata: z.string().optional().describe("JSON string of metadata key-value pairs"),
+      search_query: z.string().optional().describe("Stripe search query string, e.g. 'email:\"foo@bar.com\"' or 'name:\"John\"'. Used with action=search"),
+      limit: z.number().optional().describe("Max results for list/search (default 10, max 100)"),
+    },
+    async ({ action, customer_id, email, name, description, phone, metadata, search_query, limit = 10 }) => {
+      try {
+        const meta = metadata ? JSON.parse(metadata) : undefined;
+        const validLimit = Math.min(Math.max(limit, 1), 100);
 
-// Stripe Prices Tool
-server.tool(
- "stripe_prices",
- {
- action: z.enum(['create', 'list', 'retrieve', 'update', 'archive']).describe("The action to perform on prices"),
- price_id: z.string().optional().describe("Price ID (required for retrieve, update, archive actions)"),
- product_id: z.string().optional().describe("Product ID (required for create action)"),
- unit_amount: z.number().optional().describe("Price in cents (e.g., 2000 for $20.00, required for create)"),
- currency: z.string().optional().describe("Currency code (e.g., 'usd', defaults to 'usd')"),
- recurring_interval: z.enum(['day', 'week', 'month', 'year']).optional().describe("Billing interval for subscriptions (optional for one-time payments)"),
- recurring_interval_count: z.number().optional().describe("Number of intervals between billings (defaults to 1)"),
- metadata: z.string().optional().describe("JSON string of key-value metadata object (optional, e.g., '{\"plan\":\"pro\"}')"),
- active: z.boolean().optional().describe("Whether the price is active (optional, for update/archive)")
- },
- async ({ action, price_id, product_id, unit_amount, currency = 'usd', recurring_interval, recurring_interval_count = 1, metadata, active }) => {
- try {
- // Parse metadata if provided
- let parsedMetadata: Record | undefined;
- if (metadata) {
- try {
- parsedMetadata = JSON.parse(metadata);
- } catch (error) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Invalid metadata JSON format' }, null, 2)
- }]
- };
- }
- }
- 
- switch (action) {
- case 'create':
- if (!product_id || !unit_amount) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Product ID and unit_amount are required for create action' }, null, 2)
- }]
- };
- }
- 
- const createParams: any = {
- product: product_id,
- unit_amount,
- currency
- };
- 
- if (recurring_interval) {
- createParams.recurring = {
- interval: recurring_interval,
- interval_count: recurring_interval_count
- };
- }
- 
- if (parsedMetadata) createParams.metadata = parsedMetadata;
- 
- const price = await stripe.prices.create(createParams);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- price,
- message: `Successfully created price: ${price.unit_amount ? (price.unit_amount / 100) : 'custom'} ${price.currency.toUpperCase()}${price.recurring ? ` per ${price.recurring.interval}` : ''}`
- }, null, 2)
- }]
- };
- 
- case 'list':
- const listParams: any = { limit: 100 };
- if (product_id) listParams.product = product_id;
- 
- const prices = await stripe.prices.list(listParams);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- prices: prices.data,
- message: `Found ${prices.data.length} price(s)`
- }, null, 2)
- }]
- };
- 
- case 'retrieve':
- if (!price_id) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Price ID is required for retrieve action' }, null, 2)
- }]
- };
- }
- 
- const retrievedPrice = await stripe.prices.retrieve(price_id);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- price: retrievedPrice,
- message: `Retrieved price: ${retrievedPrice.unit_amount ? (retrievedPrice.unit_amount / 100) : 'custom'} ${retrievedPrice.currency.toUpperCase()}`
- }, null, 2)
- }]
- };
- 
- case 'update':
- if (!price_id) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Price ID is required for update action' }, null, 2)
- }]
- };
- }
- 
- const updateParams: any = {};
- if (parsedMetadata) updateParams.metadata = parsedMetadata;
- if (active !== undefined) updateParams.active = active;
- 
- const updatedPrice = await stripe.prices.update(price_id, updateParams);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- price: updatedPrice,
- message: `Successfully updated price: ${updatedPrice.unit_amount ? (updatedPrice.unit_amount / 100) : 'custom'} ${updatedPrice.currency.toUpperCase()}`
- }, null, 2)
- }]
- };
- 
- case 'archive':
- if (!price_id) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Price ID is required for archive action' }, null, 2)
- }]
- };
- }
- 
- const archivedPrice = await stripe.prices.update(price_id, { active: false });
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- price: archivedPrice,
- message: `Successfully archived price: ${archivedPrice.unit_amount ? (archivedPrice.unit_amount / 100) : 'custom'} ${archivedPrice.currency.toUpperCase()}`
- }, null, 2)
- }]
- };
- 
- default:
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: `Unknown action: ${action}` }, null, 2)
- }]
- };
- }
- } catch (error) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify(handleError(error), null, 2)
- }]
- };
- }
- }
-);
+        switch (action) {
+          case 'create': {
+            const customer = await stripe.customers.create({
+              ...(email && { email }),
+              ...(name && { name }),
+              ...(description && { description }),
+              ...(phone && { phone }),
+              ...(meta && { metadata: meta }),
+            });
+            return ok(customer, `Created customer ${customer.id}`);
+          }
+          case 'retrieve': {
+            if (!customer_id) return err('customer_id is required for retrieve');
+            const customer = await stripe.customers.retrieve(customer_id);
+            return ok(customer);
+          }
+          case 'update': {
+            if (!customer_id) return err('customer_id is required for update');
+            const customer = await stripe.customers.update(customer_id, {
+              ...(email && { email }),
+              ...(name && { name }),
+              ...(description !== undefined && { description }),
+              ...(phone && { phone }),
+              ...(meta && { metadata: meta }),
+            });
+            return ok(customer, `Updated customer ${customer.id}`);
+          }
+          case 'delete': {
+            if (!customer_id) return err('customer_id is required for delete');
+            const deleted = await stripe.customers.del(customer_id);
+            return ok(deleted, `Deleted customer ${customer_id}`);
+          }
+          case 'list': {
+            const customers = await stripe.customers.list({
+              limit: validLimit,
+              ...(email && { email }),
+            });
+            return ok({ customers: customers.data, has_more: customers.has_more }, `Found ${customers.data.length} customer(s)`);
+          }
+          case 'search': {
+            // Use Stripe Search API — correct way to find customers by email/name/metadata
+            const query = search_query || (email ? `email:"${email}"` : '');
+            if (!query) return err('Provide search_query or email for search action');
+            const results = await stripe.customers.search({ query, limit: validLimit });
+            return ok({ customers: results.data, has_more: results.has_more }, `Found ${results.data.length} customer(s)`);
+          }
+        }
+      } catch (e) { return err(e); }
+    }
+  );
 
-// Stripe Webhooks Tool
-server.tool(
- "stripe_webhooks",
- {
- action: z.enum(['create', 'list', 'retrieve', 'update', 'delete']).describe("The action to perform on webhook endpoints"),
- webhook_id: z.string().optional().describe("Webhook endpoint ID (required for retrieve, update, delete actions)"),
- url: z.string().optional().describe("The URL to send webhook events to (required for create, must start with https://)"),
- enabled_events: z.array(z.string()).optional().describe("Array of events to subscribe to (required for create, e.g., ['payment_intent.succeeded', 'customer.subscription.created'])"),
- description: z.string().optional().describe("Description of the webhook endpoint (optional)"),
- enabled: z.boolean().optional().describe("Whether the webhook endpoint is enabled (optional, for update)")
- },
- async ({ action, webhook_id, url, enabled_events, description, enabled }) => {
- try {
- switch (action) {
- case 'create':
- if (!url || !enabled_events) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'URL and enabled_events are required for create action' }, null, 2)
- }]
- };
- }
- 
- if (!url.startsWith('https://')) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Webhook URL must start with https://' }, null, 2)
- }]
- };
- }
- 
- const createParams: any = {
- url,
- enabled_events
- };
- 
- if (description) createParams.description = description;
- 
- const webhook = await stripe.webhookEndpoints.create(createParams);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- webhook,
- message: `Successfully created webhook endpoint: ${webhook.url}`
- }, null, 2)
- }]
- };
- 
- case 'list':
- const webhooks = await stripe.webhookEndpoints.list({ limit: 100 });
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- webhooks: webhooks.data,
- message: `Found ${webhooks.data.length} webhook endpoint(s)`
- }, null, 2)
- }]
- };
- 
- case 'retrieve':
- if (!webhook_id) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Webhook ID is required for retrieve action' }, null, 2)
- }]
- };
- }
- 
- const retrievedWebhook = await stripe.webhookEndpoints.retrieve(webhook_id);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- webhook: retrievedWebhook,
- message: `Retrieved webhook endpoint: ${retrievedWebhook.url}`
- }, null, 2)
- }]
- };
- 
- case 'update':
- if (!webhook_id) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Webhook ID is required for update action' }, null, 2)
- }]
- };
- }
- 
- const updateParams: any = {};
- if (url) updateParams.url = url;
- if (enabled_events) updateParams.enabled_events = enabled_events;
- if (description !== undefined) updateParams.description = description;
- if (enabled !== undefined) updateParams.disabled = !enabled;
- 
- const updatedWebhook = await stripe.webhookEndpoints.update(webhook_id, updateParams);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- webhook: updatedWebhook,
- message: `Successfully updated webhook endpoint: ${updatedWebhook.url}`
- }, null, 2)
- }]
- };
- 
- case 'delete':
- if (!webhook_id) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Webhook ID is required for delete action' }, null, 2)
- }]
- };
- }
- 
- const deletedWebhook = await stripe.webhookEndpoints.del(webhook_id);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- webhook: deletedWebhook,
- message: `Successfully deleted webhook endpoint`
- }, null, 2)
- }]
- };
- 
- default:
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: `Unknown action: ${action}` }, null, 2)
- }]
- };
- }
- } catch (error) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify(handleError(error), null, 2)
- }]
- };
- }
- }
-);
+  // ── Subscriptions ──────────────────────────────────────────────────────────
 
-// Stripe Portal Config Tool
-server.tool(
- "stripe_portal_config",
- {
- action: z.enum(['create', 'list', 'retrieve', 'update']).describe("The action to perform on portal configurations"),
- configuration_id: z.string().optional().describe("Configuration ID (required for retrieve and update actions)"),
- business_profile_headline: z.string().optional().describe("Headline for the business profile (optional)"),
- business_profile_privacy_policy_url: z.string().optional().describe("URL to privacy policy (optional, must start with https://)"),
- business_profile_terms_of_service_url: z.string().optional().describe("URL to terms of service (optional, must start with https://)"),
- default_return_url: z.string().optional().describe("Default return URL after customer actions (optional, must start with https://)"),
- features_customer_update_allowed_updates: z.array(z.enum(['email', 'name', 'phone', 'address', 'shipping', 'tax_id'])).optional().describe("Which customer details can be updated (optional)"),
- features_invoice_history_enabled: z.boolean().optional().describe("Whether customers can view invoice history (defaults to true)"),
- features_payment_method_update_enabled: z.boolean().optional().describe("Whether customers can update payment methods (defaults to true)"),
- features_subscription_cancel_enabled: z.boolean().optional().describe("Whether customers can cancel subscriptions (defaults to true)"),
- features_subscription_pause_enabled: z.boolean().optional().describe("Whether customers can pause subscriptions (defaults to false)"),
- features_subscription_update_enabled: z.boolean().optional().describe("Whether customers can update subscriptions (defaults to true)")
- },
- async ({ 
- action, 
- configuration_id, 
- business_profile_headline,
- business_profile_privacy_policy_url,
- business_profile_terms_of_service_url,
- default_return_url,
- features_customer_update_allowed_updates,
- features_invoice_history_enabled = true,
- features_payment_method_update_enabled = true,
- features_subscription_cancel_enabled = true,
- features_subscription_pause_enabled = false,
- features_subscription_update_enabled = true
- }) => {
- try {
- switch (action) {
- case 'create':
- const createParams: any = {
- features: {
- invoice_history: { enabled: features_invoice_history_enabled },
- payment_method_update: { enabled: features_payment_method_update_enabled },
- subscription_cancel: { enabled: features_subscription_cancel_enabled },
- subscription_pause: { enabled: features_subscription_pause_enabled },
- subscription_update: { enabled: features_subscription_update_enabled }
- }
- };
- 
- if (business_profile_headline || business_profile_privacy_policy_url || business_profile_terms_of_service_url) {
- createParams.business_profile = {};
- if (business_profile_headline) createParams.business_profile.headline = business_profile_headline;
- if (business_profile_privacy_policy_url) createParams.business_profile.privacy_policy_url = business_profile_privacy_policy_url;
- if (business_profile_terms_of_service_url) createParams.business_profile.terms_of_service_url = business_profile_terms_of_service_url;
- }
- 
- if (default_return_url) createParams.default_return_url = default_return_url;
- 
- if (features_customer_update_allowed_updates) {
- createParams.features.customer_update = {
- enabled: true,
- allowed_updates: features_customer_update_allowed_updates
- };
- }
- 
- const configuration = await stripe.billingPortal.configurations.create(createParams);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- configuration,
- message: `Successfully created portal configuration: ${configuration.id}`
- }, null, 2)
- }]
- };
- 
- case 'list':
- const configurations = await stripe.billingPortal.configurations.list({ limit: 100 });
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- configurations: configurations.data,
- message: `Found ${configurations.data.length} portal configuration(s)`
- }, null, 2)
- }]
- };
- 
- case 'retrieve':
- if (!configuration_id) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Configuration ID is required for retrieve action' }, null, 2)
- }]
- };
- }
- 
- const retrievedConfig = await stripe.billingPortal.configurations.retrieve(configuration_id);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- configuration: retrievedConfig,
- message: `Retrieved portal configuration: ${retrievedConfig.id}`
- }, null, 2)
- }]
- };
- 
- case 'update':
- if (!configuration_id) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: 'Configuration ID is required for update action' }, null, 2)
- }]
- };
- }
- 
- const updateParams: any = {};
- 
- if (business_profile_headline || business_profile_privacy_policy_url || business_profile_terms_of_service_url) {
- updateParams.business_profile = {};
- if (business_profile_headline) updateParams.business_profile.headline = business_profile_headline;
- if (business_profile_privacy_policy_url) updateParams.business_profile.privacy_policy_url = business_profile_privacy_policy_url;
- if (business_profile_terms_of_service_url) updateParams.business_profile.terms_of_service_url = business_profile_terms_of_service_url;
- }
- 
- if (default_return_url) updateParams.default_return_url = default_return_url;
- 
- updateParams.features = {
- invoice_history: { enabled: features_invoice_history_enabled },
- payment_method_update: { enabled: features_payment_method_update_enabled },
- subscription_cancel: { enabled: features_subscription_cancel_enabled },
- subscription_pause: { enabled: features_subscription_pause_enabled },
- subscription_update: { enabled: features_subscription_update_enabled }
- };
- 
- if (features_customer_update_allowed_updates) {
- updateParams.features.customer_update = {
- enabled: true,
- allowed_updates: features_customer_update_allowed_updates
- };
- }
- 
- const updatedConfig = await stripe.billingPortal.configurations.update(configuration_id, updateParams);
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ 
- success: true, 
- configuration: updatedConfig,
- message: `Successfully updated portal configuration: ${updatedConfig.id}`
- }, null, 2)
- }]
- };
- 
- default:
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: `Unknown action: ${action}` }, null, 2)
- }]
- };
- }
- } catch (error) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify(handleError(error), null, 2)
- }]
- };
- }
- }
-);
+  server.tool("stripe_subscriptions",
+    "Manage Stripe subscriptions. Actions: create, retrieve, update, cancel, list. Status values: active, past_due, unpaid, canceled, trialing, all.",
+    {
+      action: z.enum(['create', 'retrieve', 'update', 'cancel', 'list']),
+      subscription_id: z.string().optional().describe("Subscription ID (required for retrieve, update, cancel)"),
+      customer_id: z.string().optional().describe("Customer ID (required for create, optional filter for list)"),
+      price_id: z.string().optional().describe("Price ID (required for create)"),
+      status: z.enum(['active', 'past_due', 'unpaid', 'canceled', 'trialing', 'incomplete', 'incomplete_expired', 'all']).optional().describe("Filter by status (for list)"),
+      cancel_at_period_end: z.boolean().optional().describe("Cancel at end of billing period instead of immediately (for cancel/update)"),
+      trial_period_days: z.number().optional().describe("Trial period in days (for create)"),
+      metadata: z.string().optional().describe("JSON string of metadata key-value pairs"),
+      limit: z.number().optional().describe("Max results for list (default 10, max 100)"),
+    },
+    async ({ action, subscription_id, customer_id, price_id, status, cancel_at_period_end, trial_period_days, metadata, limit = 10 }) => {
+      try {
+        const meta = metadata ? JSON.parse(metadata) : undefined;
+        const validLimit = Math.min(Math.max(limit, 1), 100);
 
-// Stripe Query Tool
-server.tool(
- "stripe_query",
- {
- resource: z.enum([
- 'events', // Webhook events and logs
- 'charges', // Payment charges 
- 'payment_intents', // Payment intents
- 'customers', // Customer records
- 'subscriptions', // Subscription data
- 'invoices', // Invoice records
- 'products', // Product catalog
- 'prices' // Pricing data
- ]).describe('Stripe resource to query. Each resource provides different data and filtering options.'),
- 
- filters: z.object({
- // Time-based filters (most common)
- created: z.object({
- gte: z.number().optional().describe('Unix timestamp: show records created on or after this time'),
- lte: z.number().optional().describe('Unix timestamp: show records created on or before this time'),
- gt: z.number().optional().describe('Unix timestamp: show records created after this time'),
- lt: z.number().optional().describe('Unix timestamp: show records created before this time')
- }).optional(),
- 
- // Status filters (resource-dependent)
- status: z.string().optional().describe('Filter by status (e.g., "succeeded", "failed", "active", "canceled"). Available values depend on resource.'),
- 
- // Event-specific filters
- type: z.string().optional().describe('For events resource: filter by event type (e.g., "payment_intent.succeeded", "invoice.payment_failed")'),
- 
- // Relationship filters
- customer: z.string().optional().describe('Customer ID to filter by (e.g., "cus_xxxxx")'),
- subscription: z.string().optional().describe('Subscription ID to filter by (e.g., "sub_xxxxx")'),
- invoice: z.string().optional().describe('Invoice ID to filter by (e.g., "in_xxxxx")'),
- payment_intent: z.string().optional().describe('Payment Intent ID to filter by (e.g., "pi_xxxxx")'),
- 
- // Amount filters
- amount: z.object({
- gte: z.number().optional().describe('Amount in cents: show records with amount >= this value'),
- lte: z.number().optional().describe('Amount in cents: show records with amount <= this value')
- }).optional()
- }).optional().describe('Filters to apply to the query. Combine multiple filters to narrow results.'),
- limit: z.number().optional().describe('Maximum number of records to return (must be between 1-100, defaults to 10)'),
- expand: z.array(z.string()).optional().describe('Stripe expand parameters to include related objects (e.g., ["customer", "payment_method"])')
- },
- async ({ resource, filters = {}, limit = 10, expand }) => {
- try {
- // Validate limit
- const validLimit = Math.min(Math.max(limit || 10, 1), 100);
+        switch (action) {
+          case 'create': {
+            if (!customer_id || !price_id) return err('customer_id and price_id are required for create');
+            const sub = await stripe.subscriptions.create({
+              customer: customer_id,
+              items: [{ price: price_id }],
+              ...(trial_period_days && { trial_period_days }),
+              ...(meta && { metadata: meta }),
+              expand: ['latest_invoice.payment_intent'],
+            });
+            return ok(sub, `Created subscription ${sub.id} (status: ${sub.status})`);
+          }
+          case 'retrieve': {
+            if (!subscription_id) return err('subscription_id is required for retrieve');
+            const sub = await stripe.subscriptions.retrieve(subscription_id);
+            return ok(sub);
+          }
+          case 'update': {
+            if (!subscription_id) return err('subscription_id is required for update');
+            const sub = await stripe.subscriptions.update(subscription_id, {
+              ...(cancel_at_period_end !== undefined && { cancel_at_period_end }),
+              ...(meta && { metadata: meta }),
+            });
+            return ok(sub, `Updated subscription ${subscription_id}`);
+          }
+          case 'cancel': {
+            if (!subscription_id) return err('subscription_id is required for cancel');
+            if (cancel_at_period_end) {
+              const sub = await stripe.subscriptions.update(subscription_id, { cancel_at_period_end: true });
+              return ok(sub, `Subscription ${subscription_id} set to cancel at period end`);
+            }
+            const sub = await stripe.subscriptions.cancel(subscription_id);
+            return ok(sub, `Cancelled subscription ${subscription_id}`);
+          }
+          case 'list': {
+            const subs = await stripe.subscriptions.list({
+              limit: validLimit,
+              ...(customer_id && { customer: customer_id }),
+              ...(status && { status }),
+            });
+            return ok({ subscriptions: subs.data, has_more: subs.has_more }, `Found ${subs.data.length} subscription(s)`);
+          }
+        }
+      } catch (e) { return err(e); }
+    }
+  );
 
- // Build query parameters
- const params: any = { limit: validLimit };
- 
- // Add filters
- if (filters.created) params.created = filters.created;
- if (filters.status) params.status = filters.status;
- if (filters.type) params.type = filters.type;
- if (filters.customer) params.customer = filters.customer;
- if (filters.subscription) params.subscription = filters.subscription;
- if (filters.invoice) params.invoice = filters.invoice;
- if (filters.payment_intent) params.payment_intent = filters.payment_intent;
- if (filters.amount) params.amount = filters.amount;
- if (expand) params.expand = expand;
+  // ── Products ───────────────────────────────────────────────────────────────
 
- // Execute query based on resource type
- let result;
- switch (resource) {
- case 'events':
- result = await stripe.events.list(params);
- break;
- case 'charges':
- result = await stripe.charges.list(params);
- break;
- case 'payment_intents':
- result = await stripe.paymentIntents.list(params);
- break;
- case 'customers':
- result = await stripe.customers.list(params);
- break;
- case 'subscriptions':
- result = await stripe.subscriptions.list(params);
- break;
- case 'invoices':
- result = await stripe.invoices.list(params);
- break;
- case 'products':
- result = await stripe.products.list(params);
- break;
- case 'prices':
- result = await stripe.prices.list(params);
- break;
- default:
- return {
- content: [{
- type: "text",
- text: JSON.stringify({ success: false, error: `Unsupported resource: ${resource}` }, null, 2)
- }]
- };
- }
+  server.tool("stripe_products",
+    "Manage Stripe products. Actions: create, retrieve, update, archive, list.",
+    {
+      action: z.enum(['create', 'retrieve', 'update', 'archive', 'list']),
+      product_id: z.string().optional().describe("Product ID (required for retrieve, update, archive)"),
+      name: z.string().optional().describe("Product name (required for create)"),
+      description: z.string().optional().describe("Product description"),
+      active: z.boolean().optional().describe("Whether active (for update/list filter)"),
+      metadata: z.string().optional().describe("JSON string of metadata"),
+      limit: z.number().optional().describe("Max results for list (default 10, max 100)"),
+    },
+    async ({ action, product_id, name, description, active, metadata, limit = 10 }) => {
+      try {
+        const meta = metadata ? JSON.parse(metadata) : undefined;
+        const validLimit = Math.min(Math.max(limit, 1), 100);
 
- return {
- content: [{
- type: "text",
- text: JSON.stringify({
- success: true,
- resource,
- count: result.data.length,
- has_more: result.has_more,
- data: result.data,
- message: `Found ${result.data.length} ${resource} record(s)${result.has_more ? ' (more available)' : ''}`
- }, null, 2)
- }]
- };
+        switch (action) {
+          case 'create': {
+            if (!name) return err('name is required for create');
+            const product = await stripe.products.create({
+              name,
+              ...(description && { description }),
+              ...(meta && { metadata: meta }),
+            });
+            return ok(product, `Created product ${product.id}: ${product.name}`);
+          }
+          case 'retrieve': {
+            if (!product_id) return err('product_id is required for retrieve');
+            return ok(await stripe.products.retrieve(product_id));
+          }
+          case 'update': {
+            if (!product_id) return err('product_id is required for update');
+            const product = await stripe.products.update(product_id, {
+              ...(name && { name }),
+              ...(description !== undefined && { description }),
+              ...(active !== undefined && { active }),
+              ...(meta && { metadata: meta }),
+            });
+            return ok(product, `Updated product ${product_id}`);
+          }
+          case 'archive': {
+            if (!product_id) return err('product_id is required for archive');
+            const product = await stripe.products.update(product_id, { active: false });
+            return ok(product, `Archived product ${product_id}`);
+          }
+          case 'list': {
+            const products = await stripe.products.list({
+              limit: validLimit,
+              ...(active !== undefined && { active }),
+            });
+            return ok({ products: products.data, has_more: products.has_more }, `Found ${products.data.length} product(s)`);
+          }
+        }
+      } catch (e) { return err(e); }
+    }
+  );
 
- } catch (error) {
- return {
- content: [{
- type: "text",
- text: JSON.stringify(handleError(error), null, 2)
- }]
- };
- }
- }
-);
+  // ── Prices ─────────────────────────────────────────────────────────────────
 
-} // End of addStripeTools function
+  server.tool("stripe_prices",
+    "Manage Stripe prices. Actions: create, retrieve, update, archive, list.",
+    {
+      action: z.enum(['create', 'retrieve', 'update', 'archive', 'list']),
+      price_id: z.string().optional().describe("Price ID (required for retrieve, update, archive)"),
+      product_id: z.string().optional().describe("Product ID (required for create, optional filter for list)"),
+      unit_amount: z.number().optional().describe("Price in cents, e.g. 2000 = $20.00 (required for create)"),
+      currency: z.string().optional().describe("ISO currency code, e.g. 'usd' (default: usd)"),
+      recurring_interval: z.enum(['day', 'week', 'month', 'year']).optional().describe("Billing interval (omit for one-time)"),
+      active: z.boolean().optional().describe("Whether active (for update/list filter)"),
+      metadata: z.string().optional().describe("JSON string of metadata"),
+      limit: z.number().optional().describe("Max results for list (default 10, max 100)"),
+    },
+    async ({ action, price_id, product_id, unit_amount, currency = 'usd', recurring_interval, active, metadata, limit = 10 }) => {
+      try {
+        const meta = metadata ? JSON.parse(metadata) : undefined;
+        const validLimit = Math.min(Math.max(limit, 1), 100);
 
-// Start the server
-async function main() {
- if (TRANSPORT_TYPE === 'http') {
- // Modern Streamable HTTP transport with backwards compatibility for SSE
- const { createServer } = await import('http');
- const { parse } = await import('url');
- 
- // Store transports for session management
- const streamableTransports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
- const sseTransports: { [sessionId: string]: SSEServerTransport } = {};
- 
- const httpServer = createServer(async (req, res) => {
- const parsedUrl = parse(req.url || '', true);
- 
- // Enable CORS for all requests
- res.setHeader('Access-Control-Allow-Origin', '*');
- res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
- res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, X-Stripe-Api-Key, Stripe-Api-Key');
- res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
- 
- if (req.method === 'OPTIONS') {
- res.writeHead(200);
- res.end();
- return;
- }
- 
- // Modern Streamable HTTP endpoint
- if (parsedUrl.pathname === '/mcp') {
- if (req.method === 'POST') {
- // Handle Streamable HTTP requests
- const sessionId = req.headers['mcp-session-id'] as string | undefined;
- let transport: StreamableHTTPServerTransport;
+        switch (action) {
+          case 'create': {
+            if (!product_id || unit_amount === undefined) return err('product_id and unit_amount are required for create');
+            const price = await stripe.prices.create({
+              product: product_id,
+              unit_amount,
+              currency,
+              ...(recurring_interval && { recurring: { interval: recurring_interval } }),
+              ...(meta && { metadata: meta }),
+            });
+            const label = `${(price.unit_amount ?? 0) / 100} ${price.currency.toUpperCase()}${price.recurring ? `/${price.recurring.interval}` : ''}`;
+            return ok(price, `Created price ${price.id}: ${label}`);
+          }
+          case 'retrieve': {
+            if (!price_id) return err('price_id is required for retrieve');
+            return ok(await stripe.prices.retrieve(price_id));
+          }
+          case 'update': {
+            if (!price_id) return err('price_id is required for update');
+            const price = await stripe.prices.update(price_id, {
+              ...(active !== undefined && { active }),
+              ...(meta && { metadata: meta }),
+            });
+            return ok(price, `Updated price ${price_id}`);
+          }
+          case 'archive': {
+            if (!price_id) return err('price_id is required for archive');
+            return ok(await stripe.prices.update(price_id, { active: false }), `Archived price ${price_id}`);
+          }
+          case 'list': {
+            const prices = await stripe.prices.list({
+              limit: validLimit,
+              ...(product_id && { product: product_id }),
+              ...(active !== undefined && { active }),
+            });
+            return ok({ prices: prices.data, has_more: prices.has_more }, `Found ${prices.data.length} price(s)`);
+          }
+        }
+      } catch (e) { return err(e); }
+    }
+  );
 
- if (sessionId && streamableTransports[sessionId]) {
- // Reuse existing transport
- transport = streamableTransports[sessionId];
- } else {
- // Parse body to check for initialize request
- let body = '';
- req.on('data', chunk => body += chunk);
- req.on('end', async () => {
- try {
- const requestBody = JSON.parse(body);
- 
- if (!sessionId && isInitializeRequest(requestBody)) {
- // Extract Stripe API key from headers
- const stripeApiKey = req.headers['x-stripe-api-key'] as string || 
- req.headers['stripe-api-key'] as string ||
- FALLBACK_STRIPE_SECRET_KEY;
- 
- if (!stripeApiKey) {
- res.writeHead(400, { 'Content-Type': 'application/json' });
- res.end(JSON.stringify({
- jsonrpc: '2.0',
- error: {
- code: -32000,
- message: 'Stripe API key required. Provide via X-Stripe-Api-Key header',
- },
- id: null,
- }));
- return;
- }
+  // ── Query (read-only, per-resource correct filters) ─────────────────────────
 
- // Create Stripe client with user's API key
- const stripeClient = createStripeClient(stripeApiKey);
- 
- // Create MCP server with user's Stripe client
- const mcpServer = createMcpServer(stripeClient);
- 
- // New initialization request
- transport = new StreamableHTTPServerTransport({
- sessionIdGenerator: () => randomUUID(),
- onsessioninitialized: (sessionId) => {
- streamableTransports[sessionId] = transport;
- }
- });
+  server.tool("stripe_query",
+    "Query Stripe data. Each resource supports its own valid filters — do not mix filter types across resources. For finding a customer by email, use stripe_customers with action=search instead.",
+    {
+      resource: z.enum(['events', 'charges', 'payment_intents', 'invoices', 'subscriptions', 'customers', 'products', 'prices']),
+      // customer filter — valid for: charges, payment_intents, invoices, subscriptions
+      customer_id: z.string().optional().describe("Filter by customer ID. Valid for: charges, payment_intents, invoices, subscriptions"),
+      // status — valid per resource: charges(succeeded/failed/pending), payment_intents(requires_payment_method/.../succeeded), invoices(draft/open/paid/uncollectible/void), subscriptions(active/past_due/unpaid/canceled/trialing/all)
+      status: z.string().optional().describe("Filter by status. Valid values depend on resource. subscriptions: active|past_due|canceled|trialing. invoices: draft|open|paid. charges: succeeded|failed|pending"),
+      // event type filter — valid for events only
+      event_type: z.string().optional().describe("Filter events by type, e.g. 'payment_intent.succeeded'. Only valid for resource=events"),
+      // product filter — valid for prices only
+      product_id: z.string().optional().describe("Filter prices by product ID. Only valid for resource=prices"),
+      // time range
+      created_gte: z.number().optional().describe("Unix timestamp — only records created at or after this time"),
+      created_lte: z.number().optional().describe("Unix timestamp — only records created at or before this time"),
+      limit: z.number().optional().describe("Max results (default 10, max 100)"),
+      expand: z.array(z.string()).optional().describe("Fields to expand, e.g. ['data.customer', 'data.payment_intent']"),
+    },
+    async ({ resource, customer_id, status, event_type, product_id, created_gte, created_lte, limit = 10, expand }) => {
+      try {
+        const validLimit = Math.min(Math.max(limit, 1), 100);
+        const created = (created_gte || created_lte) ? {
+          ...(created_gte && { gte: created_gte }),
+          ...(created_lte && { lte: created_lte }),
+        } : undefined;
 
- // Clean up transport when closed
- transport.onclose = () => {
- if (transport.sessionId) {
- delete streamableTransports[transport.sessionId];
- }
- };
+        // Per-resource correct filter mapping
+        let result: Stripe.ApiList<Stripe.StripeRawList['data'][0]>;
 
- // Connect server to transport
- await mcpServer.connect(transport);
- 
- // Handle the request
- await transport.handleRequest(req, res, requestBody);
- } else if (sessionId && streamableTransports[sessionId]) {
- // Use existing transport
- transport = streamableTransports[sessionId];
- await transport.handleRequest(req, res, requestBody);
- } else {
- // Invalid request
- res.writeHead(400, { 'Content-Type': 'application/json' });
- res.end(JSON.stringify({
- jsonrpc: '2.0',
- error: {
- code: -32000,
- message: 'Bad Request: No valid session ID provided',
- },
- id: null,
- }));
- }
- } catch (error) {
- res.writeHead(400, { 'Content-Type': 'application/json' });
- res.end(JSON.stringify({ 
- jsonrpc: '2.0',
- error: { code: -32700, message: 'Parse error' },
- id: null 
- }));
- }
- });
- return;
- }
- 
- // For existing sessions, read body and handle request
- let body = '';
- req.on('data', chunk => body += chunk);
- req.on('end', async () => {
- try {
- const requestBody = JSON.parse(body);
- await transport.handleRequest(req, res, requestBody);
- } catch (error) {
- res.writeHead(400, { 'Content-Type': 'application/json' });
- res.end(JSON.stringify({ 
- jsonrpc: '2.0',
- error: { code: -32700, message: 'Parse error' },
- id: null 
- }));
- }
- });
- 
- } else if (req.method === 'GET') {
- // Handle GET requests for SSE notifications (Streamable HTTP)
- const sessionId = req.headers['mcp-session-id'] as string | undefined;
- if (!sessionId || !streamableTransports[sessionId]) {
- res.writeHead(400, { 'Content-Type': 'text/plain' });
- res.end('Invalid or missing session ID');
- return;
- }
- 
- const transport = streamableTransports[sessionId];
- await transport.handleRequest(req, res);
- 
- } else if (req.method === 'DELETE') {
- // Handle session termination
- const sessionId = req.headers['mcp-session-id'] as string | undefined;
- if (!sessionId || !streamableTransports[sessionId]) {
- res.writeHead(400, { 'Content-Type': 'text/plain' });
- res.end('Invalid or missing session ID');
- return;
- }
- 
- const transport = streamableTransports[sessionId];
- await transport.handleRequest(req, res);
- }
- 
- // Legacy SSE endpoint for backwards compatibility
- } else if (parsedUrl.pathname === '/sse' && req.method === 'GET') {
- // Extract Stripe API key from headers or use fallback
- const stripeApiKey = req.headers['x-stripe-api-key'] as string || 
- req.headers['stripe-api-key'] as string ||
- process.env.X_STRIPE_API_KEY ||
- process.env.STRIPE_API_KEY ||
- FALLBACK_STRIPE_SECRET_KEY;
- 
- if (!stripeApiKey) {
- res.writeHead(400, { 'Content-Type': 'application/json' });
- res.end(JSON.stringify({ error: 'Stripe API key required. Add to Cursor config: "env": {"X-Stripe-Api-Key": "sk_live_..."}' }));
- return;
- }
+        switch (resource) {
+          case 'events':
+            result = await stripe.events.list({
+              limit: validLimit,
+              ...(event_type && { type: event_type }),
+              ...(created && { created }),
+              ...(expand && { expand }),
+            });
+            break;
+          case 'charges':
+            result = await stripe.charges.list({
+              limit: validLimit,
+              ...(customer_id && { customer: customer_id }),
+              ...(created && { created }),
+              ...(expand && { expand }),
+            });
+            break;
+          case 'payment_intents':
+            result = await stripe.paymentIntents.list({
+              limit: validLimit,
+              ...(customer_id && { customer: customer_id }),
+              ...(created && { created }),
+              ...(expand && { expand }),
+            });
+            break;
+          case 'invoices':
+            result = await stripe.invoices.list({
+              limit: validLimit,
+              ...(customer_id && { customer: customer_id }),
+              ...(status && { status: status as Stripe.InvoiceListParams.Status }),
+              ...(created && { created }),
+              ...(expand && { expand }),
+            });
+            break;
+          case 'subscriptions':
+            result = await stripe.subscriptions.list({
+              limit: validLimit,
+              ...(customer_id && { customer: customer_id }),
+              ...(status && { status: status as Stripe.SubscriptionListParams.Status }),
+              ...(created && { created }),
+              ...(expand && { expand }),
+            });
+            break;
+          case 'customers':
+            // customers.list does NOT support status or customer filter
+            // Use stripe_customers action=search to find by email
+            result = await stripe.customers.list({
+              limit: validLimit,
+              ...(created && { created }),
+              ...(expand && { expand }),
+            });
+            break;
+          case 'products':
+            result = await stripe.products.list({
+              limit: validLimit,
+              ...(created && { created }),
+              ...(expand && { expand }),
+            });
+            break;
+          case 'prices':
+            result = await stripe.prices.list({
+              limit: validLimit,
+              ...(product_id && { product: product_id }),
+              ...(created && { created }),
+              ...(expand && { expand }),
+            });
+            break;
+          default:
+            return err(`Unknown resource: ${resource}`);
+        }
 
- // Create Stripe client and MCP server for this session
- const stripeClient = createStripeClient(stripeApiKey);
- const mcpServer = createMcpServer(stripeClient);
- 
- const transport = new SSEServerTransport('/messages', res);
- const sessionId = transport.sessionId;
- sseTransports[sessionId] = transport;
- 
- res.on("close", () => {
- delete sseTransports[sessionId];
- });
- 
- await mcpServer.connect(transport);
- 
- } else if (parsedUrl.pathname === '/messages' && req.method === 'POST') {
- // Legacy message endpoint for SSE transport
- const sessionId = parsedUrl.query.sessionId as string;
- const transport = sseTransports[sessionId];
- 
- if (transport) {
- let body = '';
- req.on('data', chunk => body += chunk);
- req.on('end', async () => {
- try {
- const message = JSON.parse(body);
- await transport.handlePostMessage(req, res, message);
- } catch (error) {
- res.writeHead(400, { 'Content-Type': 'application/json' });
- res.end(JSON.stringify({ error: 'Invalid JSON' }));
- }
- });
- } else {
- res.writeHead(400, { 'Content-Type': 'application/json' });
- res.end(JSON.stringify({ error: 'No transport found for sessionId' }));
- }
- 
- } else if (parsedUrl.pathname === '/health') {
- res.writeHead(200, { 'Content-Type': 'application/json' });
- res.end(JSON.stringify({ 
- status: 'healthy', 
- service: 'stripe-mcp-server',
- version: '1.0.0',
- transport: 'http',
- protocol: 'streamable-http-with-sse-fallback'
- }));
- 
- } else if (parsedUrl.pathname === '/') {
- res.writeHead(200, { 'Content-Type': 'application/json' });
- res.end(JSON.stringify({
- name: 'Stripe MCP Server',
- version: '1.0.0',
- description: 'Model Context Protocol server for Stripe integration',
- transport: 'http',
- protocol: 'streamable-http-with-sse-fallback',
- endpoints: {
- mcp: '/mcp (POST/GET/DELETE) - Modern Streamable HTTP',
- sse: '/sse (GET) - Legacy SSE stream',
- messages: '/messages (POST) - Legacy SSE messages', 
- health: '/health - Health check'
- },
- tools: [
- 'stripe_connect',
- 'stripe_products', 
- 'stripe_prices',
- 'stripe_webhooks',
- 'stripe_portal_config',
- 'stripe_query'
- ]
- }));
- 
- } else {
- res.writeHead(404, { 'Content-Type': 'application/json' });
- res.end(JSON.stringify({ error: 'Not found' }));
- }
- });
- 
- httpServer.listen(PORT, '0.0.0.0', () => {
- console.error(`Stripe MCP Server running on HTTP at port ${PORT}`);
- console.error(`Health check: http://0.0.0.0:${PORT}/health`);
- console.error(`Modern endpoint: http://0.0.0.0:${PORT}/mcp`);
- console.error(`Legacy SSE: http://0.0.0.0:${PORT}/sse`);
- });
- 
- } else {
- // Stdio transport for local usage
- if (!defaultStripe) {
- console.error("Stripe API key is required for stdio mode");
- process.exit(1);
- }
- 
- const server = createMcpServer(defaultStripe);
- const transport = new StdioServerTransport();
- await server.connect(transport);
- console.error("Stripe MCP Server running on stdio");
- }
+        return ok({
+          resource,
+          count: result.data.length,
+          has_more: result.has_more,
+          data: result.data,
+        }, `Found ${result.data.length} ${resource} record(s)${result.has_more ? ' (more available, use created_lte to paginate)' : ''}`);
+
+      } catch (e) { return err(e); }
+    }
+  );
+
+  // ── Webhooks ───────────────────────────────────────────────────────────────
+
+  server.tool("stripe_webhooks",
+    "Manage Stripe webhook endpoints. Actions: create, retrieve, update, delete, list.",
+    {
+      action: z.enum(['create', 'retrieve', 'update', 'delete', 'list']),
+      webhook_id: z.string().optional().describe("Webhook endpoint ID (required for retrieve, update, delete)"),
+      url: z.string().optional().describe("HTTPS URL to send events to (required for create)"),
+      enabled_events: z.array(z.string()).optional().describe("Event types to subscribe to, e.g. ['payment_intent.succeeded']. Use ['*'] for all events."),
+      description: z.string().optional().describe("Description of the webhook"),
+      enabled: z.boolean().optional().describe("Enable or disable the endpoint (for update)"),
+    },
+    async ({ action, webhook_id, url, enabled_events, description, enabled }) => {
+      try {
+        switch (action) {
+          case 'create': {
+            if (!url || !enabled_events) return err('url and enabled_events are required for create');
+            if (!url.startsWith('https://')) return err('Webhook URL must start with https://');
+            const webhook = await stripe.webhookEndpoints.create({
+              url,
+              enabled_events: enabled_events as Stripe.WebhookEndpointCreateParams.EnabledEvent[],
+              ...(description && { description }),
+            });
+            return ok(webhook, `Created webhook endpoint ${webhook.id}: ${webhook.url}`);
+          }
+          case 'retrieve': {
+            if (!webhook_id) return err('webhook_id is required for retrieve');
+            return ok(await stripe.webhookEndpoints.retrieve(webhook_id));
+          }
+          case 'update': {
+            if (!webhook_id) return err('webhook_id is required for update');
+            const webhook = await stripe.webhookEndpoints.update(webhook_id, {
+              ...(url && { url }),
+              ...(enabled_events && { enabled_events: enabled_events as Stripe.WebhookEndpointUpdateParams.EnabledEvent[] }),
+              ...(description !== undefined && { description }),
+              ...(enabled !== undefined && { disabled: !enabled }),
+            });
+            return ok(webhook, `Updated webhook ${webhook_id}`);
+          }
+          case 'delete': {
+            if (!webhook_id) return err('webhook_id is required for delete');
+            return ok(await stripe.webhookEndpoints.del(webhook_id), `Deleted webhook ${webhook_id}`);
+          }
+          case 'list': {
+            const webhooks = await stripe.webhookEndpoints.list({ limit: 100 });
+            return ok({ webhooks: webhooks.data }, `Found ${webhooks.data.length} webhook(s)`);
+          }
+        }
+      } catch (e) { return err(e); }
+    }
+  );
+
+  // ── Portal Config ──────────────────────────────────────────────────────────
+
+  server.tool("stripe_portal_config",
+    "Manage Stripe billing portal configurations. Actions: create, retrieve, update, list.",
+    {
+      action: z.enum(['create', 'retrieve', 'update', 'list']),
+      configuration_id: z.string().optional().describe("Configuration ID (required for retrieve and update)"),
+      default_return_url: z.string().optional().describe("Return URL after customer actions"),
+      business_profile_headline: z.string().optional().describe("Headline shown in the portal"),
+      invoice_history_enabled: z.boolean().optional().describe("Allow customers to view invoice history (default true)"),
+      payment_method_update_enabled: z.boolean().optional().describe("Allow updating payment methods (default true)"),
+      subscription_cancel_enabled: z.boolean().optional().describe("Allow canceling subscriptions (default true)"),
+      subscription_pause_enabled: z.boolean().optional().describe("Allow pausing subscriptions (default false)"),
+    },
+    async ({ action, configuration_id, default_return_url, business_profile_headline, invoice_history_enabled = true, payment_method_update_enabled = true, subscription_cancel_enabled = true, subscription_pause_enabled = false }) => {
+      try {
+        const features = {
+          invoice_history: { enabled: invoice_history_enabled },
+          payment_method_update: { enabled: payment_method_update_enabled },
+          subscription_cancel: { enabled: subscription_cancel_enabled },
+          subscription_pause: { enabled: subscription_pause_enabled },
+          subscription_update: { enabled: false },
+        };
+
+        switch (action) {
+          case 'create': {
+            const config = await stripe.billingPortal.configurations.create({
+              features,
+              ...(default_return_url && { default_return_url }),
+              ...(business_profile_headline && { business_profile: { headline: business_profile_headline } }),
+            });
+            return ok(config, `Created portal configuration ${config.id}`);
+          }
+          case 'retrieve': {
+            if (!configuration_id) return err('configuration_id is required for retrieve');
+            return ok(await stripe.billingPortal.configurations.retrieve(configuration_id));
+          }
+          case 'update': {
+            if (!configuration_id) return err('configuration_id is required for update');
+            const config = await stripe.billingPortal.configurations.update(configuration_id, {
+              ...(default_return_url && { default_return_url }),
+              ...(business_profile_headline && { business_profile: { headline: business_profile_headline } }),
+            });
+            return ok(config, `Updated portal configuration ${configuration_id}`);
+          }
+          case 'list': {
+            const configs = await stripe.billingPortal.configurations.list({ limit: 100 });
+            return ok({ configurations: configs.data }, `Found ${configs.data.length} configuration(s)`);
+          }
+        }
+      } catch (e) { return err(e); }
+    }
+  );
 }
 
-main().catch((error) => {
- console.error("Failed to start server:", error);
- process.exit(1);
-});
+// ─── MCP server factory ────────────────────────────────────────────────────────
+
+function createMcpServer(stripeClient: Stripe): McpServer {
+  const server = new McpServer({ name: "stripe-mcp", version: "2.0.0" });
+  addStripeTools(server, stripeClient);
+  return server;
+}
+
+// ─── HTTP server ───────────────────────────────────────────────────────────────
+
+async function main() {
+  if (TRANSPORT_TYPE === 'http') {
+    const { createServer } = await import('http');
+    const { parse } = await import('url');
+
+    const streamableTransports: Record<string, StreamableHTTPServerTransport> = {};
+    const sseTransports: Record<string, SSEServerTransport> = {};
+
+    const httpServer = createServer(async (req, res) => {
+      const parsedUrl = parse(req.url || '', true);
+
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, X-Stripe-Api-Key');
+      res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+
+      if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
+
+      if (parsedUrl.pathname === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'healthy', service: 'stripe-mcp', version: '2.0.0', tools: ['stripe_customers', 'stripe_subscriptions', 'stripe_products', 'stripe_prices', 'stripe_query', 'stripe_webhooks', 'stripe_portal_config'] }));
+        return;
+      }
+
+      if (parsedUrl.pathname === '/mcp') {
+        if (req.method === 'POST') {
+          const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+          if (sessionId && streamableTransports[sessionId]) {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', async () => {
+              const requestBody = JSON.parse(body);
+              await streamableTransports[sessionId].handleRequest(req, res, requestBody);
+            });
+            return;
+          }
+
+          let body = '';
+          req.on('data', chunk => body += chunk);
+          req.on('end', async () => {
+            const requestBody = JSON.parse(body);
+
+            if (!sessionId && isInitializeRequest(requestBody)) {
+              const stripeApiKey = (req.headers['x-stripe-api-key'] as string) || FALLBACK_STRIPE_SECRET_KEY;
+              if (!stripeApiKey) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Stripe API key required via X-Stripe-Api-Key header' }, id: null }));
+                return;
+              }
+
+              const transport = new StreamableHTTPServerTransport({
+                sessionIdGenerator: () => randomUUID(),
+                onsessioninitialized: (sid) => { streamableTransports[sid] = transport; },
+              });
+              transport.onclose = () => { if (transport.sessionId) delete streamableTransports[transport.sessionId]; };
+
+              await createMcpServer(createStripeClient(stripeApiKey)).connect(transport);
+              await transport.handleRequest(req, res, requestBody);
+            } else {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Invalid request' }, id: null }));
+            }
+          });
+          return;
+        }
+
+        if (req.method === 'GET') {
+          const sessionId = req.headers['mcp-session-id'] as string;
+          if (!sessionId || !streamableTransports[sessionId]) {
+            res.writeHead(400); res.end('Invalid session ID'); return;
+          }
+          await streamableTransports[sessionId].handleRequest(req, res);
+          return;
+        }
+
+        if (req.method === 'DELETE') {
+          const sessionId = req.headers['mcp-session-id'] as string;
+          if (sessionId && streamableTransports[sessionId]) await streamableTransports[sessionId].handleRequest(req, res);
+          else { res.writeHead(400); res.end('Invalid session ID'); }
+          return;
+        }
+      }
+
+      // Legacy SSE
+      if (parsedUrl.pathname === '/sse' && req.method === 'GET') {
+        const stripeApiKey = (req.headers['x-stripe-api-key'] as string) || FALLBACK_STRIPE_SECRET_KEY;
+        if (!stripeApiKey) { res.writeHead(400); res.end(JSON.stringify({ error: 'X-Stripe-Api-Key header required' })); return; }
+        const transport = new SSEServerTransport('/messages', res);
+        sseTransports[transport.sessionId] = transport;
+        res.on('close', () => { delete sseTransports[transport.sessionId]; });
+        await createMcpServer(createStripeClient(stripeApiKey)).connect(transport);
+        return;
+      }
+
+      if (parsedUrl.pathname === '/messages' && req.method === 'POST') {
+        const sessionId = parsedUrl.query.sessionId as string;
+        const transport = sseTransports[sessionId];
+        if (!transport) { res.writeHead(400); res.end(JSON.stringify({ error: 'No transport found' })); return; }
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', async () => { await transport.handlePostMessage(req, res, JSON.parse(body)); });
+        return;
+      }
+
+      res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' }));
+    });
+
+    httpServer.on('error', (err) => console.error('HTTP server error:', err));
+    httpServer.listen(PORT, '0.0.0.0', () => {
+      console.error(`stripe-mcp v2.0.0 running on port ${PORT}`);
+    });
+
+  } else {
+    if (!defaultStripe) { console.error("STRIPE_SECRET_KEY required for stdio mode"); process.exit(1); }
+    const transport = new StdioServerTransport();
+    await createMcpServer(defaultStripe).connect(transport);
+    console.error("stripe-mcp running on stdio");
+  }
+}
+
+main().catch((e) => { console.error("Failed to start:", e); process.exit(1); });
