@@ -459,6 +459,215 @@ function addStripeTools(server: McpServer, stripe: Stripe) {
     }
   );
 
+  // ── Refunds ────────────────────────────────────────────────────────────────
+
+  server.tool("stripe_refunds",
+    "Issue and view refunds. Refund a charge fully or partially. Actions: create, retrieve, list.",
+    {
+      action: z.enum(['create', 'retrieve', 'list']),
+      charge_id: z.string().optional().describe("Charge ID to refund (required for create, e.g. ch_xxx or py_xxx)"),
+      payment_intent_id: z.string().optional().describe("Payment Intent ID to refund (alternative to charge_id for create)"),
+      refund_id: z.string().optional().describe("Refund ID (required for retrieve)"),
+      amount: z.number().optional().describe("Amount in cents to refund. Omit to refund full amount."),
+      reason: z.enum(['duplicate', 'fraudulent', 'requested_by_customer']).optional().describe("Reason for refund"),
+      customer_id: z.string().optional().describe("Filter refunds by customer (for list)"),
+      limit: z.number().optional().describe("Max results for list (default 10, max 100)"),
+    },
+    async ({ action, charge_id, payment_intent_id, refund_id, amount, reason, limit = 10 }) => {
+      try {
+        const validLimit = Math.min(Math.max(limit, 1), 100);
+        switch (action) {
+          case 'create': {
+            if (!charge_id && !payment_intent_id) return err('charge_id or payment_intent_id is required for create');
+            const refund = await stripe.refunds.create({
+              ...(charge_id && { charge: charge_id }),
+              ...(payment_intent_id && { payment_intent: payment_intent_id }),
+              ...(amount && { amount }),
+              ...(reason && { reason }),
+            });
+            const display = amount ? `$${amount / 100}` : 'full amount';
+            return ok(refund, `Refund ${refund.id} created for ${display} (status: ${refund.status})`);
+          }
+          case 'retrieve': {
+            if (!refund_id) return err('refund_id is required for retrieve');
+            return ok(await stripe.refunds.retrieve(refund_id));
+          }
+          case 'list': {
+            const refunds = await stripe.refunds.list({ limit: validLimit });
+            return ok({ refunds: refunds.data, has_more: refunds.has_more }, `Found ${refunds.data.length} refund(s)`);
+          }
+        }
+      } catch (e) { return err(e); }
+    }
+  );
+
+  // ── Invoices ───────────────────────────────────────────────────────────────
+
+  server.tool("stripe_invoices",
+    "Create and manage one-off invoices. Actions: create (creates a draft), add_item (adds a line item to draft), finalize (locks and opens for payment), send (emails to customer + returns hosted URL), pay (charge immediately), void, retrieve, list. Typical flow: create → add_item → finalize → send.",
+    {
+      action: z.enum(['create', 'add_item', 'finalize', 'send', 'pay', 'void', 'retrieve', 'list']),
+      invoice_id: z.string().optional().describe("Invoice ID (required for add_item, finalize, send, pay, void, retrieve)"),
+      customer_id: z.string().optional().describe("Customer ID (required for create, optional filter for list)"),
+      description: z.string().optional().describe("Invoice description / memo (for create)"),
+      days_until_due: z.number().optional().describe("Days until payment is due when sending invoice (default 30)"),
+      // add_item params
+      amount: z.number().optional().describe("Line item amount in cents (required for add_item)"),
+      currency: z.string().optional().describe("Currency code for line item (default: usd)"),
+      item_description: z.string().optional().describe("Line item description (for add_item)"),
+      // list params
+      status: z.enum(['draft', 'open', 'paid', 'uncollectible', 'void']).optional().describe("Filter invoices by status (for list)"),
+      limit: z.number().optional().describe("Max results for list (default 10, max 100)"),
+    },
+    async ({ action, invoice_id, customer_id, description, days_until_due = 30, amount, currency = 'usd', item_description, status, limit = 10 }) => {
+      try {
+        const validLimit = Math.min(Math.max(limit, 1), 100);
+        switch (action) {
+          case 'create': {
+            if (!customer_id) return err('customer_id is required for create');
+            const invoice = await stripe.invoices.create({
+              customer: customer_id,
+              collection_method: 'send_invoice',
+              days_until_due,
+              ...(description && { description }),
+            });
+            return ok(invoice, `Created draft invoice ${invoice.id}. Add items with add_item, then finalize and send.`);
+          }
+          case 'add_item': {
+            if (!invoice_id || !amount) return err('invoice_id and amount are required for add_item');
+            if (!customer_id) return err('customer_id is required for add_item');
+            const item = await stripe.invoiceItems.create({
+              customer: customer_id,
+              invoice: invoice_id,
+              amount,
+              currency,
+              ...(item_description && { description: item_description }),
+            });
+            return ok(item, `Added line item $${amount / 100} to invoice ${invoice_id}`);
+          }
+          case 'finalize': {
+            if (!invoice_id) return err('invoice_id is required for finalize');
+            const invoice = await stripe.invoices.finalizeInvoice(invoice_id);
+            return ok(invoice, `Invoice ${invoice_id} finalized — amount due: $${(invoice.amount_due ?? 0) / 100}`);
+          }
+          case 'send': {
+            if (!invoice_id) return err('invoice_id is required for send');
+            const invoice = await stripe.invoices.sendInvoice(invoice_id);
+            return ok({
+              id: invoice.id,
+              status: invoice.status,
+              hosted_invoice_url: invoice.hosted_invoice_url,
+              amount_due: invoice.amount_due,
+            }, `Invoice sent. Customer payment URL: ${invoice.hosted_invoice_url}`);
+          }
+          case 'pay': {
+            if (!invoice_id) return err('invoice_id is required for pay');
+            const invoice = await stripe.invoices.pay(invoice_id);
+            return ok(invoice, `Invoice ${invoice_id} paid (status: ${invoice.status})`);
+          }
+          case 'void': {
+            if (!invoice_id) return err('invoice_id is required for void');
+            const invoice = await stripe.invoices.voidInvoice(invoice_id);
+            return ok(invoice, `Invoice ${invoice_id} voided`);
+          }
+          case 'retrieve': {
+            if (!invoice_id) return err('invoice_id is required for retrieve');
+            return ok(await stripe.invoices.retrieve(invoice_id));
+          }
+          case 'list': {
+            const invoices = await stripe.invoices.list({
+              limit: validLimit,
+              ...(customer_id && { customer: customer_id }),
+              ...(status && { status }),
+            });
+            return ok({ invoices: invoices.data, has_more: invoices.has_more }, `Found ${invoices.data.length} invoice(s)`);
+          }
+        }
+      } catch (e) { return err(e); }
+    }
+  );
+
+  // ── Billing Portal Session ─────────────────────────────────────────────────
+
+  server.tool("stripe_billing_portal_session",
+    "Create a Stripe Billing Portal session URL for a specific customer. Returns a URL you can send to the customer so they can self-manage their subscription, update payment methods, view invoices, and cancel. Requires a billing portal configuration to exist (use stripe_portal_config to create one).",
+    {
+      customer_id: z.string().describe("Customer ID to create the portal session for"),
+      return_url: z.string().optional().describe("URL to redirect the customer after they leave the portal (e.g. 'https://yourapp.com/account')"),
+    },
+    async ({ customer_id, return_url }) => {
+      try {
+        const session = await stripe.billingPortal.sessions.create({
+          customer: customer_id,
+          ...(return_url && { return_url }),
+        });
+        return ok({
+          url: session.url,
+          customer: session.customer,
+          created: session.created,
+        }, `Portal session created. Send this URL to the customer: ${session.url}`);
+      } catch (e) { return err(e); }
+    }
+  );
+
+  // ── Checkout Sessions ──────────────────────────────────────────────────────
+
+  server.tool("stripe_checkout",
+    "Create a Stripe Checkout session — generates a hosted payment URL. Use mode=payment for one-time purchases, mode=subscription for recurring, mode=setup to save a payment method. Returns a URL to redirect the customer to.",
+    {
+      mode: z.enum(['payment', 'subscription', 'setup']).describe("payment = one-time, subscription = recurring, setup = save payment method only"),
+      price_id: z.string().optional().describe("Stripe Price ID to checkout (for payment or subscription mode)"),
+      quantity: z.number().optional().describe("Quantity of the price (default 1)"),
+      success_url: z.string().describe("URL to redirect after successful payment (required)"),
+      cancel_url: z.string().describe("URL to redirect if customer cancels (required)"),
+      customer_id: z.string().optional().describe("Existing customer ID to associate with the session"),
+      customer_email: z.string().optional().describe("Pre-fill customer email"),
+      allow_promotion_codes: z.boolean().optional().describe("Whether to allow promo codes at checkout (default false)"),
+      metadata: z.string().optional().describe("JSON string of metadata key-value pairs"),
+    },
+    async ({ mode, price_id, quantity = 1, success_url, cancel_url, customer_id, customer_email, allow_promotion_codes, metadata }) => {
+      try {
+        const meta = metadata ? JSON.parse(metadata) : undefined;
+        const session = await stripe.checkout.sessions.create({
+          mode,
+          success_url,
+          cancel_url,
+          ...(price_id && { line_items: [{ price: price_id, quantity }] }),
+          ...(customer_id && { customer: customer_id }),
+          ...(customer_email && !customer_id && { customer_email }),
+          ...(allow_promotion_codes && { allow_promotion_codes }),
+          ...(meta && { metadata: meta }),
+        });
+        return ok({
+          id: session.id,
+          url: session.url,
+          mode: session.mode,
+          status: session.status,
+          payment_status: session.payment_status,
+        }, `Checkout session created. Payment URL: ${session.url}`);
+      } catch (e) { return err(e); }
+    }
+  );
+
+  // ── Balance ────────────────────────────────────────────────────────────────
+
+  server.tool("stripe_balance",
+    "Retrieve your Stripe account balance — shows available funds (ready for payout) and pending funds (still processing).",
+    {},
+    async () => {
+      try {
+        const balance = await stripe.balance.retrieve();
+        const fmt = (amt: Stripe.Balance.Available[]) =>
+          amt.map(a => `${a.currency.toUpperCase()}: $${a.amount / 100}`).join(', ');
+        return ok({
+          available: balance.available,
+          pending: balance.pending,
+          livemode: balance.livemode,
+        }, `Available: ${fmt(balance.available)} | Pending: ${fmt(balance.pending)}`);
+      } catch (e) { return err(e); }
+    }
+  );
+
   // ── Portal Config ──────────────────────────────────────────────────────────
 
   server.tool("stripe_portal_config",
@@ -517,7 +726,7 @@ function addStripeTools(server: McpServer, stripe: Stripe) {
 // ─── MCP server factory ────────────────────────────────────────────────────────
 
 function createMcpServer(stripeClient: Stripe): McpServer {
-  const server = new McpServer({ name: "stripe-mcp", version: "2.0.0" });
+  const server = new McpServer({ name: "stripe-mcp", version: "2.1.0" });
   addStripeTools(server, stripeClient);
   return server;
 }
@@ -544,7 +753,7 @@ async function main() {
 
       if (parsedUrl.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'healthy', service: 'stripe-mcp', version: '2.0.0', tools: ['stripe_customers', 'stripe_subscriptions', 'stripe_products', 'stripe_prices', 'stripe_query', 'stripe_webhooks', 'stripe_portal_config'] }));
+        res.end(JSON.stringify({ status: 'healthy', service: 'stripe-mcp', version: '2.1.0', tools: ['stripe_customers', 'stripe_subscriptions', 'stripe_products', 'stripe_prices', 'stripe_query', 'stripe_refunds', 'stripe_invoices', 'stripe_billing_portal_session', 'stripe_checkout', 'stripe_balance', 'stripe_webhooks', 'stripe_portal_config'] }));
         return;
       }
 
