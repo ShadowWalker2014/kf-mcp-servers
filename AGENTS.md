@@ -25,6 +25,20 @@ kf-mcp-servers/
 - **Railway**: Deploy one instance per DB, root dir = `postgres/`, set `DATABASE_URL` per service
 - **Replaces**: stdio `@modelcontextprotocol/server-postgres` for pg2, creator-crm, etc.
 
+### railway
+- **Purpose**: Manage Railway infrastructure — projects, services, environments, deployments, logs, variables, domains
+- **Transport**: HTTP (Express + Streamable HTTP)
+- **Port**: 3400
+- **Auth (MCP)**: `MCP_API_KEY` via `Authorization: Bearer` or `x-api-key` header
+- **Railway Token**: `X-Railway-Token` header per request (or `RAILWAY_TOKEN` env fallback)
+- **Endpoint**: `POST /mcp`
+- **Health**: `GET /health`
+- **Tools**: `check_status`, `list_projects`, `list_services`, `list_environments`, `list_deployments`, `get_logs` (build|deploy), `list_variables`, `set_variable`, `redeploy`, `restart_deployment`, `create_environment`, `generate_domain`
+- **Implementation**: Direct Railway GraphQL API (`https://backboard.railway.com/graphql/v2`) — no CLI needed
+- **Env vars**: `MCP_API_KEY`, `RAILWAY_TOKEN` (optional fallback), `PORT`
+- **Railway**: Root dir = `railway/`
+- **Token type**: Account token (from railway.com/account/tokens) — broadest scope
+
 ### stripe
 - **Purpose**: Stripe management — products, prices, webhooks, billing portal, query events/charges/subscriptions
 - **Transport**: HTTP (Streamable HTTP, raw node `http` module)
