@@ -1,3 +1,5 @@
+// Railway GraphQL API — all ID arguments use String!, not ID!
+// Tested live against https://backboard.railway.com/graphql/v2
 const RAILWAY_GQL = 'https://backboard.railway.com/graphql/v2';
 const FETCH_TIMEOUT_MS = 30_000;
 
@@ -30,26 +32,15 @@ export async function gql<T = unknown>(
 // ─── Queries ──────────────────────────────────────────────────────────────────
 
 export async function getMe(token: string) {
+  // workspaces is a flat array on me (not a connection/edges pattern)
   const data = await gql<{
     me: {
       name: string;
       email: string;
-      workspaces: { edges: { node: { id: string; name: string } }[] };
+      workspaces: { id: string; name: string }[];
     };
-  }>(token, `
-    query {
-      me {
-        name
-        email
-        workspaces { edges { node { id name } } }
-      }
-    }
-  `);
-  return {
-    name: data.me.name,
-    email: data.me.email,
-    workspaces: data.me.workspaces.edges.map((e) => e.node),
-  };
+  }>(token, `query { me { name email workspaces { id name } } }`);
+  return data.me;
 }
 
 export async function listProjects(token: string, workspaceId: string) {
@@ -66,7 +57,7 @@ export async function listProjects(token: string, workspaceId: string) {
       };
     };
   }>(token, `
-    query Projects($workspaceId: ID!) {
+    query($workspaceId: String!) {
       workspace(workspaceId: $workspaceId) {
         projects {
           edges {
@@ -89,7 +80,7 @@ export async function listServices(token: string, projectId: string) {
       services: { edges: { node: { id: string; name: string; updatedAt: string } }[] };
     };
   }>(token, `
-    query Services($projectId: ID!) {
+    query($projectId: String!) {
       project(id: $projectId) {
         services { edges { node { id name updatedAt } } }
       }
@@ -104,7 +95,7 @@ export async function listEnvironments(token: string, projectId: string) {
       environments: { edges: { node: { id: string; name: string; createdAt: string } }[] };
     };
   }>(token, `
-    query Environments($projectId: ID!) {
+    query($projectId: String!) {
       project(id: $projectId) {
         environments { edges { node { id name createdAt } } }
       }
@@ -130,7 +121,7 @@ export async function listDeployments(
       }[];
     };
   }>(token, `
-    query Deployments($projectId: ID!, $environmentId: ID!, $serviceId: ID!, $limit: Int!) {
+    query($projectId: String!, $environmentId: String!, $serviceId: String!, $limit: Int!) {
       deployments(
         first: $limit
         input: { projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId }
@@ -146,10 +137,8 @@ export async function getDeploymentLogs(token: string, deploymentId: string) {
   const data = await gql<{
     deploymentLogs: { timestamp: string; message: string; severity: string }[];
   }>(token, `
-    query DeploymentLogs($deploymentId: ID!) {
-      deploymentLogs(deploymentId: $deploymentId) {
-        timestamp message severity
-      }
+    query($deploymentId: String!) {
+      deploymentLogs(deploymentId: $deploymentId) { timestamp message severity }
     }
   `, { deploymentId });
   return data.deploymentLogs;
@@ -159,10 +148,8 @@ export async function getBuildLogs(token: string, deploymentId: string) {
   const data = await gql<{
     buildLogs: { timestamp: string; message: string; severity: string }[];
   }>(token, `
-    query BuildLogs($deploymentId: ID!) {
-      buildLogs(deploymentId: $deploymentId) {
-        timestamp message severity
-      }
+    query($deploymentId: String!) {
+      buildLogs(deploymentId: $deploymentId) { timestamp message severity }
     }
   `, { deploymentId });
   return data.buildLogs;
@@ -175,7 +162,7 @@ export async function getVariables(
   serviceId?: string
 ) {
   const data = await gql<{ variables: Record<string, string> | null }>(token, `
-    query Variables($projectId: ID!, $environmentId: ID!, $serviceId: ID) {
+    query($projectId: String!, $environmentId: String!, $serviceId: String) {
       variables(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId)
     }
   `, { projectId, environmentId, serviceId });
@@ -193,15 +180,13 @@ export async function upsertVariable(
   value: string
 ) {
   await gql(token, `
-    mutation VariableUpsert($input: VariableUpsertInput!) {
-      variableUpsert(input: $input)
-    }
+    mutation($input: VariableUpsertInput!) { variableUpsert(input: $input) }
   `, { input: { projectId, environmentId, serviceId, name, value } });
 }
 
 export async function redeployService(token: string, environmentId: string, serviceId: string) {
   await gql(token, `
-    mutation ServiceInstanceRedeploy($environmentId: ID!, $serviceId: ID!) {
+    mutation($environmentId: String!, $serviceId: String!) {
       serviceInstanceRedeploy(environmentId: $environmentId, serviceId: $serviceId)
     }
   `, { environmentId, serviceId });
@@ -209,15 +194,13 @@ export async function redeployService(token: string, environmentId: string, serv
 
 export async function restartDeployment(token: string, deploymentId: string) {
   await gql(token, `
-    mutation DeploymentRestart($id: ID!) {
-      deploymentRestart(id: $id)
-    }
+    mutation($id: String!) { deploymentRestart(id: $id) }
   `, { id: deploymentId });
 }
 
 export async function createEnvironment(token: string, projectId: string, name: string) {
   const data = await gql<{ environmentCreate: { id: string; name: string } }>(token, `
-    mutation EnvironmentCreate($input: EnvironmentCreateInput!) {
+    mutation($input: EnvironmentCreateInput!) {
       environmentCreate(input: $input) { id name }
     }
   `, { input: { projectId, name } });
@@ -226,14 +209,13 @@ export async function createEnvironment(token: string, projectId: string, name: 
 
 export async function generateDomain(
   token: string,
-  projectId: string,
   environmentId: string,
   serviceId: string
 ) {
   const data = await gql<{ serviceDomainCreate: { domain: string } }>(token, `
-    mutation ServiceDomainCreate($input: ServiceDomainCreateInput!) {
+    mutation($input: ServiceDomainCreateInput!) {
       serviceDomainCreate(input: $input) { domain }
     }
-  `, { input: { projectId, environmentId, serviceId } });
+  `, { input: { environmentId, serviceId } });
   return data.serviceDomainCreate.domain;
 }

@@ -132,12 +132,11 @@ function createMcpServer(railwayToken: string): McpServer {
 
   server.tool('generate_domain', 'Generate a Railway domain for a service.',
     {
-      project_id: z.string().describe('Railway project ID'),
       environment_id: z.string().describe('Railway environment ID'),
       service_id: z.string().describe('Railway service ID'),
     },
-    async ({ project_id, environment_id, service_id }) => {
-      const domain = await generateDomain(railwayToken, project_id, environment_id, service_id);
+    async ({ environment_id, service_id }) => {
+      const domain = await generateDomain(railwayToken, environment_id, service_id);
       return { content: [{ type: 'text', text: `Domain generated: ${domain}` }] };
     }
   );
