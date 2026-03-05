@@ -54,7 +54,7 @@ HTTP MCP server for Blink.new CMS management and web tools. Manage docs and blog
 
 ```json
 "blink-cms": {
-  "url": "https://blink-cms.up.railway.app/mcp",
+  "url": "https://blink-cms-production.up.railway.app/mcp",
   "headers": {
     "Authorization": "Bearer <MCP_API_KEY>"
   }

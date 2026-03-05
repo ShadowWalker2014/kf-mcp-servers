@@ -32,7 +32,7 @@ The `X-Stripe-Api-Key` header takes priority over the `STRIPE_SECRET_KEY` env va
 
 ```json
 "stripe": {
-  "url": "https://stripe-mcp.up.railway.app/mcp",
+  "url": "https://stripe-production-bc3a.up.railway.app/mcp",
   "headers": {
     "X-Stripe-Api-Key": "sk_live_..."
   }

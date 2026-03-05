@@ -35,14 +35,14 @@ Both PgBouncer proxy URLs and direct connection URLs work. Prefer PgBouncer (`ma
 
 ```json
 "pg2-postgres": {
-  "url": "https://postgres.up.railway.app/mcp",
+  "url": "https://postgres-production-85106.up.railway.app/mcp",
   "headers": {
     "Authorization": "Bearer <MCP_API_KEY>",
     "X-Database-URL": "postgresql://postgres:<pass>@maglev.proxy.rlwy.net:22905/railway"
   }
 },
 "creator-crm": {
-  "url": "https://postgres.up.railway.app/mcp",
+  "url": "https://postgres-production-85106.up.railway.app/mcp",
   "headers": {
     "Authorization": "Bearer <MCP_API_KEY>",
     "X-Database-URL": "postgresql://postgres:<pass>@centerbeam.proxy.rlwy.net:29356/railway"

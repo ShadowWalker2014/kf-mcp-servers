@@ -37,22 +37,22 @@ Add to `~/.cursor/mcp.json`:
 {
   "mcpServers": {
     "blink-cms": {
-      "url": "https://blink-cms.up.railway.app/mcp",
+      "url": "https://blink-cms-production.up.railway.app/mcp",
       "headers": { "Authorization": "Bearer <MCP_API_KEY>" }
     },
     "pg2-postgres": {
-      "url": "https://postgres.up.railway.app/mcp",
+      "url": "https://postgres-production-85106.up.railway.app/mcp",
       "headers": {
         "Authorization": "Bearer <MCP_API_KEY>",
         "X-Database-URL": "postgresql://..."
       }
     },
     "stripe": {
-      "url": "https://stripe.up.railway.app/mcp",
+      "url": "https://stripe-production-bc3a.up.railway.app/mcp",
       "headers": { "X-Stripe-Api-Key": "sk_live_..." }
     },
     "railway": {
-      "url": "https://railway-mcp.up.railway.app/mcp",
+      "url": "https://railway-production-9f1b.up.railway.app/mcp",
       "headers": {
         "Authorization": "Bearer <MCP_API_KEY>",
         "X-Railway-Token": "<railway-account-token>"

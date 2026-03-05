@@ -56,7 +56,7 @@ The `X-Railway-Token` header takes priority over the `RAILWAY_TOKEN` env var. Ea
 
 ```json
 "railway": {
-  "url": "https://railway-mcp.up.railway.app/mcp",
+  "url": "https://railway-production-9f1b.up.railway.app/mcp",
   "headers": {
     "Authorization": "Bearer <MCP_API_KEY>",
     "X-Railway-Token": "<your-railway-account-token>"
