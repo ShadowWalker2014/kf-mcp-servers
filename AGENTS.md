@@ -25,6 +25,19 @@ kf-mcp-servers/
 - **Railway**: Deploy one instance per DB, root dir = `postgres/`, set `DATABASE_URL` per service
 - **Replaces**: stdio `@modelcontextprotocol/server-postgres` for pg2, creator-crm, etc.
 
+### stripe
+- **Purpose**: Stripe management — products, prices, webhooks, billing portal, query events/charges/subscriptions
+- **Transport**: HTTP (Streamable HTTP, raw node `http` module)
+- **Port**: 3300
+- **Auth**: Stripe API key via `X-Stripe-Api-Key` header (or `STRIPE_SECRET_KEY` env fallback)
+- **Endpoint**: `POST /mcp`
+- **Health**: `GET /health`
+- **Tools**: `stripe_connect`, `stripe_products`, `stripe_prices`, `stripe_webhooks`, `stripe_portal_config`, `stripe_query`
+- **Env vars**: `STRIPE_SECRET_KEY` (optional fallback), `PORT`, `TRANSPORT_TYPE=http`
+- **Runtime**: `tsx` (no tsc build step — source runs directly)
+- **Railway**: Root dir = `stripe/`
+- **Replaces**: stdio `github:ShadowWalker2014/mcp mcp-stripe`
+
 ### blink-cms
 - **Purpose**: Blink.new CMS management + web tools (search, fetch, SERP)
 - **Transport**: HTTP (Express + Streamable HTTP)

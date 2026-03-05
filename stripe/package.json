@@ -1,0 +1,24 @@
+{
+  "name": "stripe-mcp",
+  "version": "1.0.0",
+  "description": "HTTP MCP server for Stripe — products, prices, webhooks, portal, query",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "TRANSPORT_TYPE=http tsx src/index.ts",
+    "start": "npx tsx src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "stripe": "^18.0.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
