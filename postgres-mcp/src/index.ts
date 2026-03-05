@@ -4,20 +4,22 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { Pool } from 'pg';
 import { z } from 'zod';
 
-const DATABASE_URL = process.env.DATABASE_URL;
 const MCP_API_KEY = process.env.MCP_API_KEY;
 const PORT = parseInt(process.env.PORT || '3200');
 
-if (!DATABASE_URL) {
-  console.error('ERROR: DATABASE_URL is required');
-  process.exit(1);
+// Pool cache — reuse connections across requests for the same DB URL
+const pools = new Map<string, Pool>();
+
+function getPool(databaseUrl: string): Pool {
+  if (!pools.has(databaseUrl)) {
+    pools.set(databaseUrl, new Pool({ connectionString: databaseUrl, max: 5 }));
+  }
+  return pools.get(databaseUrl)!;
 }
 
-const pool = new Pool({ connectionString: DATABASE_URL });
+// ─── Schema helpers ───────────────────────────────────────────────────────────
 
-// ─── Schema helpers (mirrors @modelcontextprotocol/server-postgres behavior) ───
-
-async function getTableNames(): Promise<string[]> {
+async function getTableNames(pool: Pool): Promise<string[]> {
   const { rows } = await pool.query<{ table_name: string }>(
     `SELECT table_name FROM information_schema.tables
      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
@@ -26,7 +28,7 @@ async function getTableNames(): Promise<string[]> {
   return rows.map((r) => r.table_name);
 }
 
-async function getTableSchema(tableName: string): Promise<string> {
+async function getTableSchema(pool: Pool, tableName: string): Promise<string> {
   const { rows } = await pool.query<{
     column_name: string;
     data_type: string;
@@ -55,10 +57,9 @@ async function getTableSchema(tableName: string): Promise<string> {
 
 // ─── MCP server factory ────────────────────────────────────────────────────────
 
-async function createMcpServer(): Promise<McpServer> {
+async function createMcpServer(pool: Pool, databaseUrl: string): Promise<McpServer> {
   const server = new McpServer({ name: 'postgres-mcp', version: '1.0.0' });
 
-  // Tool: query (same as official server — read-only enforced via BEGIN/ROLLBACK)
   server.tool(
     'query',
     'Run a read-only SQL query against the PostgreSQL database.',
@@ -85,16 +86,13 @@ async function createMcpServer(): Promise<McpServer> {
     }
   );
 
-  // Resources: one per table, exposing its schema (mirrors the official server)
-  const tables = await getTableNames();
-
-  const url = new URL(DATABASE_URL!);
-  const host = url.hostname;
+  const tables = await getTableNames(pool);
+  const host = new URL(databaseUrl).hostname;
 
   for (const table of tables) {
     const uri = `postgres://${host}/${table}/schema`;
     server.resource(table, uri, async () => {
-      const schema = await getTableSchema(table);
+      const schema = await getTableSchema(pool, table);
       return { contents: [{ uri, mimeType: 'text/plain', text: schema }] };
     });
   }
@@ -102,7 +100,7 @@ async function createMcpServer(): Promise<McpServer> {
   return server;
 }
 
-// ─── Auth middleware ───────────────────────────────────────────────────────────
+// ─── Auth + DB URL resolution ─────────────────────────────────────────────────
 
 function authenticate(req: Request, res: Response, next: () => void) {
   if (!MCP_API_KEY) return next();
@@ -118,23 +116,36 @@ function authenticate(req: Request, res: Response, next: () => void) {
   next();
 }
 
+// Resolve DB URL: header takes priority, falls back to env var
+function resolveDatabaseUrl(req: Request): string | null {
+  return (req.headers['x-database-url'] as string | undefined)
+    ?? process.env.DATABASE_URL
+    ?? null;
+}
+
 // ─── Express app ──────────────────────────────────────────────────────────────
 
 const app = express();
 app.use(express.json());
 
-app.get('/health', async (_req, res) => {
-  const tables = await getTableNames().catch(() => []);
+app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
     server: 'postgres-mcp',
     version: '1.0.0',
-    tables: tables.length,
     auth: MCP_API_KEY ? 'enabled' : 'disabled',
+    mode: process.env.DATABASE_URL ? 'single-db (env)' : 'multi-db (x-database-url header)',
   });
 });
 
 app.post('/mcp', authenticate, async (req: Request, res: Response) => {
+  const databaseUrl = resolveDatabaseUrl(req);
+
+  if (!databaseUrl) {
+    res.status(400).json({ error: 'No database URL. Set DATABASE_URL env or pass X-Database-URL header.' });
+    return;
+  }
+
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
@@ -142,7 +153,8 @@ app.post('/mcp', authenticate, async (req: Request, res: Response) => {
 
   res.on('close', () => transport.close());
 
-  const server = await createMcpServer();
+  const pool = getPool(databaseUrl);
+  const server = await createMcpServer(pool, databaseUrl);
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
 });
@@ -152,7 +164,6 @@ app.delete('/mcp', (_req, res) => res.status(405).json({ error: 'Stateless mode 
 
 app.listen(PORT, () => {
   console.log(`postgres-mcp running on http://0.0.0.0:${PORT}`);
-  console.log(`  POST /mcp  — MCP endpoint`);
-  console.log(`  GET  /health`);
   console.log(`  Auth: ${MCP_API_KEY ? 'API key required' : 'OPEN (set MCP_API_KEY to secure)'}`);
+  console.log(`  DB mode: ${process.env.DATABASE_URL ? 'single-db (env)' : 'multi-db (X-Database-URL header)'}`);
 });
