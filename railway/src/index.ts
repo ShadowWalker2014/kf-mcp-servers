@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
@@ -11,13 +11,14 @@ import {
 
 const MCP_API_KEY = process.env.MCP_API_KEY;
 const PORT = parseInt(process.env.PORT || '3400');
+if (isNaN(PORT)) throw new Error(`Invalid PORT env var: "${process.env.PORT}"`);
 
 // ─── MCP server factory ────────────────────────────────────────────────────────
 
 function createMcpServer(railwayToken: string): McpServer {
   const server = new McpServer({ name: 'railway-mcp', version: '1.0.0' });
 
-  server.tool('check_status', 'Verify Railway token and get account info.', {}, async () => {
+  server.tool('check_status', 'Verify Railway token and get account info including workspaces.', {}, async () => {
     const me = await getMe(railwayToken);
     return { content: [{ type: 'text', text: JSON.stringify(me, null, 2) }] };
   });
@@ -62,13 +63,12 @@ function createMcpServer(railwayToken: string): McpServer {
   server.tool('get_logs', 'Get build or deploy logs for a deployment.',
     {
       deployment_id: z.string().describe('Railway deployment ID'),
-      log_type: z.enum(['build', 'deploy']).describe('Type of logs to retrieve'),
-      limit: z.number().optional().describe('Number of log lines (default 100)'),
+      log_type: z.enum(['build', 'deploy']).describe('Type of logs: build or deploy'),
     },
-    async ({ deployment_id, log_type, limit }) => {
+    async ({ deployment_id, log_type }) => {
       const logs = log_type === 'build'
-        ? await getBuildLogs(railwayToken, deployment_id, limit)
-        : await getDeploymentLogs(railwayToken, deployment_id, limit);
+        ? await getBuildLogs(railwayToken, deployment_id)
+        : await getDeploymentLogs(railwayToken, deployment_id);
       const text = logs.map((l) => `[${l.timestamp}] ${l.severity}: ${l.message}`).join('\n');
       return { content: [{ type: 'text', text: text || 'No logs found.' }] };
     }
@@ -96,7 +96,7 @@ function createMcpServer(railwayToken: string): McpServer {
     },
     async ({ project_id, environment_id, service_id, name, value }) => {
       await upsertVariable(railwayToken, project_id, environment_id, service_id, name, value);
-      return { content: [{ type: 'text', text: `✅ Set ${name} on service ${service_id}` }] };
+      return { content: [{ type: 'text', text: `Set ${name} on service ${service_id}` }] };
     }
   );
 
@@ -107,7 +107,7 @@ function createMcpServer(railwayToken: string): McpServer {
     },
     async ({ environment_id, service_id }) => {
       await redeployService(railwayToken, environment_id, service_id);
-      return { content: [{ type: 'text', text: `✅ Redeploy triggered for service ${service_id}` }] };
+      return { content: [{ type: 'text', text: `Redeploy triggered for service ${service_id}` }] };
     }
   );
 
@@ -115,7 +115,7 @@ function createMcpServer(railwayToken: string): McpServer {
     { deployment_id: z.string().describe('Railway deployment ID') },
     async ({ deployment_id }) => {
       await restartDeployment(railwayToken, deployment_id);
-      return { content: [{ type: 'text', text: `✅ Restarted deployment ${deployment_id}` }] };
+      return { content: [{ type: 'text', text: `Restarted deployment ${deployment_id}` }] };
     }
   );
 
@@ -138,7 +138,7 @@ function createMcpServer(railwayToken: string): McpServer {
     },
     async ({ project_id, environment_id, service_id }) => {
       const domain = await generateDomain(railwayToken, project_id, environment_id, service_id);
-      return { content: [{ type: 'text', text: `✅ Domain generated: ${domain}` }] };
+      return { content: [{ type: 'text', text: `Domain generated: ${domain}` }] };
     }
   );
 
@@ -147,13 +147,13 @@ function createMcpServer(railwayToken: string): McpServer {
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
 
-function authenticate(req: Request, res: Response, next: () => void) {
+function authenticate(req: Request, res: Response, next: NextFunction) {
   if (!MCP_API_KEY) return next();
   const key = req.headers.authorization?.startsWith('Bearer ')
     ? req.headers.authorization.slice(7)
-    : req.headers['x-api-key'] as string | undefined;
-  if (!key) return res.status(401).json({ error: 'Missing MCP_API_KEY' });
-  if (key !== MCP_API_KEY) return res.status(403).json({ error: 'Invalid MCP_API_KEY' });
+    : (req.headers['x-api-key'] as string | undefined);
+  if (!key) { res.status(401).json({ error: 'Missing API key' }); return; }
+  if (key !== MCP_API_KEY) { res.status(403).json({ error: 'Invalid API key' }); return; }
   next();
 }
 
@@ -163,7 +163,7 @@ function resolveRailwayToken(req: Request): string | null {
     ?? null;
 }
 
-// ─── Express app ──────────────────────────────────────────────────────────────
+// ─── Express app (v5 — async errors propagate automatically) ─────────────────
 
 const app = express();
 app.use(express.json());
@@ -171,7 +171,7 @@ app.use(express.json());
 app.get('/health', (_req, res) => res.json({
   status: 'ok', server: 'railway-mcp', version: '1.0.0',
   auth: MCP_API_KEY ? 'enabled' : 'disabled',
-  token_mode: process.env.RAILWAY_TOKEN ? 'env' : 'x-railway-token header',
+  token_mode: process.env.RAILWAY_TOKEN ? 'env (RAILWAY_TOKEN)' : 'per-request (X-Railway-Token header)',
 }));
 
 app.post('/mcp', authenticate, async (req: Request, res: Response) => {
@@ -193,8 +193,9 @@ app.post('/mcp', authenticate, async (req: Request, res: Response) => {
   await transport.handleRequest(req, res, req.body);
 });
 
-app.get('/mcp', (_req, res) => res.status(405).json({ error: 'Use POST /mcp' }));
-app.delete('/mcp', (_req, res) => res.status(405).json({ error: 'Stateless mode' }));
+// Authenticated stubs — prevent unauthenticated probing
+app.get('/mcp', authenticate, (_req, res) => res.status(405).json({ error: 'Use POST /mcp' }));
+app.delete('/mcp', authenticate, (_req, res) => res.status(405).json({ error: 'Stateless mode' }));
 
 app.listen(PORT, () => {
   console.log(`railway-mcp running on http://0.0.0.0:${PORT}`);

@@ -1,4 +1,5 @@
 const RAILWAY_GQL = 'https://backboard.railway.com/graphql/v2';
+const FETCH_TIMEOUT_MS = 30_000;
 
 export async function gql<T = unknown>(
   token: string,
@@ -12,7 +13,13 @@ export async function gql<T = unknown>(
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ query, variables }),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Railway API HTTP ${res.status}: ${body}`);
+  }
 
   const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
   if (json.errors?.length) throw new Error(json.errors.map((e) => e.message).join('; '));
@@ -23,11 +30,26 @@ export async function gql<T = unknown>(
 // ─── Queries ──────────────────────────────────────────────────────────────────
 
 export async function getMe(token: string) {
-  const data = await gql<{ me: { name: string; email: string; workspaces: { id: string; name: string }[] } }>(
-    token,
-    `query { me { name email workspaces { id name } } }`
-  );
-  return data.me;
+  const data = await gql<{
+    me: {
+      name: string;
+      email: string;
+      workspaces: { edges: { node: { id: string; name: string } }[] };
+    };
+  }>(token, `
+    query {
+      me {
+        name
+        email
+        workspaces { edges { node { id name } } }
+      }
+    }
+  `);
+  return {
+    name: data.me.name,
+    email: data.me.email,
+    workspaces: data.me.workspaces.edges.map((e) => e.node),
+  };
 }
 
 export async function listProjects(token: string, workspaceId: string) {
@@ -44,7 +66,7 @@ export async function listProjects(token: string, workspaceId: string) {
       };
     };
   }>(token, `
-    query Projects($workspaceId: String!) {
+    query Projects($workspaceId: ID!) {
       workspace(workspaceId: $workspaceId) {
         projects {
           edges {
@@ -67,7 +89,7 @@ export async function listServices(token: string, projectId: string) {
       services: { edges: { node: { id: string; name: string; updatedAt: string } }[] };
     };
   }>(token, `
-    query Services($projectId: String!) {
+    query Services($projectId: ID!) {
       project(id: $projectId) {
         services { edges { node { id name updatedAt } } }
       }
@@ -82,7 +104,7 @@ export async function listEnvironments(token: string, projectId: string) {
       environments: { edges: { node: { id: string; name: string; createdAt: string } }[] };
     };
   }>(token, `
-    query Environments($projectId: String!) {
+    query Environments($projectId: ID!) {
       project(id: $projectId) {
         environments { edges { node { id name createdAt } } }
       }
@@ -108,7 +130,7 @@ export async function listDeployments(
       }[];
     };
   }>(token, `
-    query Deployments($projectId: String!, $environmentId: String!, $serviceId: String!, $limit: Int!) {
+    query Deployments($projectId: ID!, $environmentId: ID!, $serviceId: ID!, $limit: Int!) {
       deployments(
         first: $limit
         input: { projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId }
@@ -120,29 +142,29 @@ export async function listDeployments(
   return data.deployments.edges.map((e) => e.node);
 }
 
-export async function getDeploymentLogs(token: string, deploymentId: string, limit = 100) {
+export async function getDeploymentLogs(token: string, deploymentId: string) {
   const data = await gql<{
     deploymentLogs: { timestamp: string; message: string; severity: string }[];
   }>(token, `
-    query DeploymentLogs($deploymentId: String!, $limit: Int!) {
-      deploymentLogs(deploymentId: $deploymentId, limit: $limit) {
+    query DeploymentLogs($deploymentId: ID!) {
+      deploymentLogs(deploymentId: $deploymentId) {
         timestamp message severity
       }
     }
-  `, { deploymentId, limit });
+  `, { deploymentId });
   return data.deploymentLogs;
 }
 
-export async function getBuildLogs(token: string, deploymentId: string, limit = 100) {
+export async function getBuildLogs(token: string, deploymentId: string) {
   const data = await gql<{
     buildLogs: { timestamp: string; message: string; severity: string }[];
   }>(token, `
-    query BuildLogs($deploymentId: String!, $limit: Int!) {
-      buildLogs(deploymentId: $deploymentId, limit: $limit) {
+    query BuildLogs($deploymentId: ID!) {
+      buildLogs(deploymentId: $deploymentId) {
         timestamp message severity
       }
     }
-  `, { deploymentId, limit });
+  `, { deploymentId });
   return data.buildLogs;
 }
 
@@ -152,12 +174,12 @@ export async function getVariables(
   environmentId: string,
   serviceId?: string
 ) {
-  const data = await gql<{ variables: Record<string, string> }>(token, `
-    query Variables($projectId: String!, $environmentId: String!, $serviceId: String) {
+  const data = await gql<{ variables: Record<string, string> | null }>(token, `
+    query Variables($projectId: ID!, $environmentId: ID!, $serviceId: ID) {
       variables(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId)
     }
   `, { projectId, environmentId, serviceId });
-  return data.variables;
+  return data.variables ?? {};
 }
 
 // ─── Mutations ────────────────────────────────────────────────────────────────
@@ -179,7 +201,7 @@ export async function upsertVariable(
 
 export async function redeployService(token: string, environmentId: string, serviceId: string) {
   await gql(token, `
-    mutation ServiceInstanceRedeploy($environmentId: String!, $serviceId: String!) {
+    mutation ServiceInstanceRedeploy($environmentId: ID!, $serviceId: ID!) {
       serviceInstanceRedeploy(environmentId: $environmentId, serviceId: $serviceId)
     }
   `, { environmentId, serviceId });
@@ -187,7 +209,7 @@ export async function redeployService(token: string, environmentId: string, serv
 
 export async function restartDeployment(token: string, deploymentId: string) {
   await gql(token, `
-    mutation DeploymentRestart($id: String!) {
+    mutation DeploymentRestart($id: ID!) {
       deploymentRestart(id: $id)
     }
   `, { id: deploymentId });

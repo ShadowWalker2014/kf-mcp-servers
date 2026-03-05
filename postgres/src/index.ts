@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Pool } from 'pg';
@@ -6,15 +6,25 @@ import { z } from 'zod';
 
 const MCP_API_KEY = process.env.MCP_API_KEY;
 const PORT = parseInt(process.env.PORT || '3200');
+if (isNaN(PORT)) throw new Error(`Invalid PORT env var: "${process.env.PORT}"`);
 
-// Pool cache — reuse connections across requests for the same DB URL
+// Pool cache — reuse connections per DB URL, evict LRU when above limit
+const MAX_POOLS = 20;
 const pools = new Map<string, Pool>();
 
 function getPool(databaseUrl: string): Pool {
-  if (!pools.has(databaseUrl)) {
-    pools.set(databaseUrl, new Pool({ connectionString: databaseUrl, max: 5 }));
+  if (pools.has(databaseUrl)) return pools.get(databaseUrl)!;
+
+  // Evict oldest entry if at cap
+  if (pools.size >= MAX_POOLS) {
+    const oldest = pools.keys().next().value!;
+    pools.get(oldest)?.end().catch(() => {});
+    pools.delete(oldest);
   }
-  return pools.get(databaseUrl)!;
+
+  const pool = new Pool({ connectionString: databaseUrl, max: 5 });
+  pools.set(databaseUrl, pool);
+  return pool;
 }
 
 // ─── Schema helpers ───────────────────────────────────────────────────────────
@@ -30,8 +40,11 @@ async function getTableNames(pool: Pool): Promise<string[]> {
 
 async function getTableSchema(pool: Pool, tableName: string): Promise<string> {
   // tableName comes from information_schema (trusted), inline it to avoid
-  // parameterized query issues with PgBouncer in transaction-pooling mode
+  // parameterized query issues with PgBouncer in transaction-pooling mode.
+  // Sanitize by keeping only alphanumeric + underscore characters.
   const safe = tableName.replace(/[^a-zA-Z0-9_]/g, '');
+  if (!safe) return `Table name "${tableName}" contains no valid characters after sanitization.`;
+
   const { rows } = await pool.query<{
     column_name: string;
     data_type: string;
@@ -104,7 +117,7 @@ async function createMcpServer(pool: Pool, databaseUrl: string): Promise<McpServ
 
 // ─── Auth + DB URL resolution ─────────────────────────────────────────────────
 
-function authenticate(req: Request, res: Response, next: () => void) {
+function authenticate(req: Request, res: Response, next: NextFunction) {
   if (!MCP_API_KEY) return next();
 
   const authHeader = req.headers.authorization;
@@ -112,13 +125,12 @@ function authenticate(req: Request, res: Response, next: () => void) {
     ? authHeader.slice(7)
     : (req.headers['x-api-key'] as string | undefined);
 
-  if (!key) return res.status(401).json({ error: 'Missing API key' });
-  if (key !== MCP_API_KEY) return res.status(403).json({ error: 'Invalid API key' });
+  if (!key) { res.status(401).json({ error: 'Missing API key' }); return; }
+  if (key !== MCP_API_KEY) { res.status(403).json({ error: 'Invalid API key' }); return; }
 
   next();
 }
 
-// Resolve DB URL: header takes priority, falls back to env var
 function resolveDatabaseUrl(req: Request): string | null {
   return (req.headers['x-database-url'] as string | undefined)
     ?? process.env.DATABASE_URL
@@ -137,10 +149,11 @@ app.get('/health', (_req, res) => {
     version: '1.0.0',
     auth: MCP_API_KEY ? 'enabled' : 'disabled',
     mode: process.env.DATABASE_URL ? 'single-db (env)' : 'multi-db (x-database-url header)',
+    pools: pools.size,
   });
 });
 
-app.post('/mcp', authenticate, async (req: Request, res: Response) => {
+app.post('/mcp', authenticate, async (req: Request, res: Response, next: NextFunction) => {
   const databaseUrl = resolveDatabaseUrl(req);
 
   if (!databaseUrl) {
@@ -155,14 +168,18 @@ app.post('/mcp', authenticate, async (req: Request, res: Response) => {
 
   res.on('close', () => transport.close());
 
-  const pool = getPool(databaseUrl);
-  const server = await createMcpServer(pool, databaseUrl);
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
+  try {
+    const pool = getPool(databaseUrl);
+    const server = await createMcpServer(pool, databaseUrl);
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    next(err);
+  }
 });
 
-app.get('/mcp', (_req, res) => res.status(405).json({ error: 'Use POST /mcp' }));
-app.delete('/mcp', (_req, res) => res.status(405).json({ error: 'Stateless mode — no sessions' }));
+app.get('/mcp', authenticate, (_req, res) => res.status(405).json({ error: 'Use POST /mcp' }));
+app.delete('/mcp', authenticate, (_req, res) => res.status(405).json({ error: 'Stateless mode — no sessions' }));
 
 app.listen(PORT, () => {
   console.log(`postgres running on http://0.0.0.0:${PORT}`);
