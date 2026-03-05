@@ -12,6 +12,19 @@ kf-mcp-servers/
 
 ## Servers
 
+### postgres-mcp
+- **Purpose**: HTTP MCP wrapper for any PostgreSQL database — same tools/resources as `@modelcontextprotocol/server-postgres`
+- **Transport**: HTTP (Express + Streamable HTTP)
+- **Port**: 3200
+- **Auth**: `MCP_API_KEY` via `Authorization: Bearer` or `x-api-key` header
+- **Endpoint**: `POST /mcp`
+- **Health**: `GET /health`
+- **Tools**: `query` (read-only SQL, enforced via BEGIN READ ONLY / ROLLBACK)
+- **Resources**: one per table — `postgres://{host}/{table}/schema` (DDL schema text)
+- **Env vars**: `DATABASE_URL` (required), `MCP_API_KEY`, `PORT`
+- **Railway**: Deploy one instance per DB, root dir = `postgres-mcp/`, set `DATABASE_URL` per service
+- **Replaces**: stdio `@modelcontextprotocol/server-postgres` for pg2, creator-crm, etc.
+
 ### blink-mcp
 - **Purpose**: Blink.new CMS management + web tools (search, fetch, SERP)
 - **Transport**: HTTP (Express + Streamable HTTP)
