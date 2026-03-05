@@ -29,6 +29,9 @@ async function getTableNames(pool: Pool): Promise<string[]> {
 }
 
 async function getTableSchema(pool: Pool, tableName: string): Promise<string> {
+  // tableName comes from information_schema (trusted), inline it to avoid
+  // parameterized query issues with PgBouncer in transaction-pooling mode
+  const safe = tableName.replace(/[^a-zA-Z0-9_]/g, '');
   const { rows } = await pool.query<{
     column_name: string;
     data_type: string;
@@ -37,9 +40,8 @@ async function getTableSchema(pool: Pool, tableName: string): Promise<string> {
   }>(
     `SELECT column_name, data_type, is_nullable, column_default
      FROM information_schema.columns
-     WHERE table_schema = 'public' AND table_name = $1
-     ORDER BY ordinal_position`,
-    [tableName]
+     WHERE table_schema = 'public' AND table_name = '${safe}'
+     ORDER BY ordinal_position`
   );
 
   if (rows.length === 0) return `Table "${tableName}" not found or has no columns.`;
