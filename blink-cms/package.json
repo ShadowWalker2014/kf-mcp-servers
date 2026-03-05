@@ -1,12 +1,12 @@
 {
-  "name": "blink-mcp",
+  "name": "blink-cms",
   "version": "2.0.0",
   "description": "Unified Blink MCP Server with CMS and Web tools",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "blink-mcp": "dist/index.js",
-    "blink-mcp-http": "dist/http-server.js"
+    "blink-cms": "dist/index.js",
+    "blink-cms-http": "dist/http-server.js"
   },
   "scripts": {
     "build": "bun run tsc",

@@ -6,7 +6,7 @@ Monorepo of HTTP MCP servers, each deployed as its own Railway service.
 
 | Folder | Description | Tools |
 |--------|-------------|-------|
-| `blink-mcp/` | Blink CMS + web search | cms_*, web_search, fetch_url, google_serp |
+| `blink-cms/` | Blink CMS + web search | cms_*, web_search, fetch_url, google_serp |
 
 ## Stack
 
@@ -18,14 +18,14 @@ Monorepo of HTTP MCP servers, each deployed as its own Railway service.
 
 Each server deploys independently:
 1. New Railway service → connect this GitHub repo
-2. Set **Root Directory** to the server subfolder (e.g. `blink-mcp/`)
+2. Set **Root Directory** to the server subfolder (e.g. `blink-cms/`)
 3. Railway uses the `Dockerfile` inside that folder
 4. Add env vars in Railway dashboard
 
 ## Local Dev
 
 ```bash
-cd blink-mcp
+cd blink-cms
 bun install
 bun run dev:http
 ```
@@ -34,7 +34,7 @@ Then connect Cursor:
 ```json
 {
   "mcpServers": {
-    "blink-mcp": {
+    "blink-cms": {
       "url": "http://localhost:3100/mcp",
       "headers": { "Authorization": "Bearer <MCP_API_KEY>" }
     }

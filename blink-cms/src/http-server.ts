@@ -39,7 +39,7 @@ const PORT = parseInt(process.env.PORT || '3100');
 
 function createMcpServer(): McpServer {
   const server = new McpServer({
-    name: 'blink-mcp',
+    name: 'blink-cms',
     version: '2.0.0',
   });
 
@@ -199,7 +199,7 @@ function authenticateMCP(req: Request, res: Response, next: () => void) {
 
 app.get('/health', (_, res) => res.json({ 
   status: 'ok', 
-  server: 'blink-mcp',
+  server: 'blink-cms',
   version: '2.0.0',
   tools: {
     cms: ['cms_list_dir', 'cms_read_file', 'cms_write_file', 'cms_search_replace', 'cms_delete_file', 'cms_restore_file', 'cms_list_trash', 'cms_multi_edit', 'cms_search', 'cms_grep', 'cms_publish', 'cms_unpublish', 'cms_discard_draft', 'cms_list_drafts', 'cms_activate_version', 'cms_get_versions', 'cms_read_version'],

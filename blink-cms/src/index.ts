@@ -104,7 +104,7 @@ const tools = [
 ];
 
 const server = new Server(
-  { name: 'blink-mcp', version: '2.0.0' },
+  { name: 'blink-cms', version: '2.0.0' },
   { capabilities: { tools: {} } }
 );
 

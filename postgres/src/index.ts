@@ -60,7 +60,7 @@ async function getTableSchema(pool: Pool, tableName: string): Promise<string> {
 // ─── MCP server factory ────────────────────────────────────────────────────────
 
 async function createMcpServer(pool: Pool, databaseUrl: string): Promise<McpServer> {
-  const server = new McpServer({ name: 'postgres-mcp', version: '1.0.0' });
+  const server = new McpServer({ name: 'postgres', version: '1.0.0' });
 
   server.tool(
     'query',
@@ -133,7 +133,7 @@ app.use(express.json());
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
-    server: 'postgres-mcp',
+    server: 'postgres',
     version: '1.0.0',
     auth: MCP_API_KEY ? 'enabled' : 'disabled',
     mode: process.env.DATABASE_URL ? 'single-db (env)' : 'multi-db (x-database-url header)',
@@ -165,7 +165,7 @@ app.get('/mcp', (_req, res) => res.status(405).json({ error: 'Use POST /mcp' }))
 app.delete('/mcp', (_req, res) => res.status(405).json({ error: 'Stateless mode — no sessions' }));
 
 app.listen(PORT, () => {
-  console.log(`postgres-mcp running on http://0.0.0.0:${PORT}`);
+  console.log(`postgres running on http://0.0.0.0:${PORT}`);
   console.log(`  Auth: ${MCP_API_KEY ? 'API key required' : 'OPEN (set MCP_API_KEY to secure)'}`);
   console.log(`  DB mode: ${process.env.DATABASE_URL ? 'single-db (env)' : 'multi-db (X-Database-URL header)'}`);
 });

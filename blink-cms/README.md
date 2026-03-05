@@ -78,9 +78,9 @@ Add to `.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "blink-mcp": {
+    "blink-cms": {
       "command": "bun",
-      "args": ["run", "/path/to/blink-mcp/dist/index.js"],
+      "args": ["run", "/path/to/blink-cms/dist/index.js"],
       "env": {
         "CMS_API_URL": "https://blink.new/api/cms",
         "CMS_API_KEY": "your-key",

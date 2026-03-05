@@ -1,5 +1,5 @@
 {
-  "name": "postgres-mcp",
+  "name": "postgres",
   "version": "1.0.0",
   "description": "HTTP MCP server wrapping @modelcontextprotocol/server-postgres — query tool + schema resources",
   "type": "module",
