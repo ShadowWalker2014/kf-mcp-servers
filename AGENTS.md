@@ -25,6 +25,18 @@ kf-mcp-servers/
 - **Railway**: Deploy one instance per DB, root dir = `postgres/`, set `DATABASE_URL` per service
 - **Replaces**: stdio `@modelcontextprotocol/server-postgres` for pg2, creator-crm, etc.
 
+### datafast
+- **Purpose**: DataFast analytics — all data queries, realtime, goal/payment tracking, visitor profiles
+- **Transport**: HTTP (Express + Streamable HTTP)
+- **Port**: 3500
+- **Auth (MCP)**: `MCP_API_KEY` via `Authorization: Bearer` or `x-api-key` header
+- **DataFast Key**: `X-Datafast-Api-Key` header per request (or `DATAFAST_API_KEY` env fallback)
+- **Endpoint**: `POST /mcp`
+- **Health**: `GET /health`
+- **Tools**: `get_metadata`, `get_overview`, `get_timeseries`, `get_realtime`, `get_realtime_map`, `get_pages`, `get_referrers`, `get_campaigns`, `get_goals`, `get_countries`, `get_regions`, `get_cities`, `get_devices`, `get_browsers`, `get_operating_systems`, `get_hostnames`, `get_visitor`, `track_goal`, `track_payment`, `delete_goals`, `delete_payments`
+- **Env vars**: `MCP_API_KEY`, `DATAFAST_API_KEY` (optional fallback), `PORT`
+- **Railway**: Root dir = `datafast/`
+
 ### railway
 - **Purpose**: Manage Railway infrastructure — projects, services, environments, deployments, logs, variables, domains
 - **Transport**: HTTP (Express + Streamable HTTP)
