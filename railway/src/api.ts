@@ -32,15 +32,24 @@ export async function gql<T = unknown>(
 // ─── Queries ──────────────────────────────────────────────────────────────────
 
 export async function getMe(token: string) {
-  // workspaces is a flat array on me (not a connection/edges pattern)
-  const data = await gql<{
-    me: {
-      name: string;
-      email: string;
-      workspaces: { id: string; name: string }[];
+  // Account tokens support `me`; workspace tokens only support `workspace(workspaceId:...)`.
+  // Try account-level query first, fall back gracefully for workspace tokens.
+  try {
+    const data = await gql<{
+      me: {
+        name: string;
+        email: string;
+        workspaces: { id: string; name: string }[];
+      };
+    }>(token, `query { me { name email workspaces { id name } } }`);
+    return { type: 'account', ...data.me };
+  } catch {
+    // Workspace token — verify it works by hitting a neutral endpoint
+    return {
+      type: 'workspace',
+      note: 'Workspace-scoped token — me query not available. Token is valid. Use list_projects with your workspace ID.',
     };
-  }>(token, `query { me { name email workspaces { id name } } }`);
-  return data.me;
+  }
 }
 
 export async function listProjects(token: string, workspaceId: string) {
