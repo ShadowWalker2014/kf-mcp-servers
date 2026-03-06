@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import {
-  getMe, listProjects, listServices, listEnvironments,
+  listProjects, listServices, listEnvironments,
   listDeployments, getDeploymentLogs, getBuildLogs,
   getVariables, upsertVariable, redeployService,
   restartDeployment, createEnvironment, generateDomain,
@@ -17,11 +17,6 @@ if (isNaN(PORT)) throw new Error(`Invalid PORT env var: "${process.env.PORT}"`);
 
 function createMcpServer(railwayToken: string): McpServer {
   const server = new McpServer({ name: 'railway-mcp', version: '1.0.0' });
-
-  server.tool('check_status', 'Verify Railway token and get account info including workspaces.', {}, async () => {
-    const me = await getMe(railwayToken);
-    return { content: [{ type: 'text', text: JSON.stringify(me, null, 2) }] };
-  });
 
   server.tool('list_projects', 'List all Railway projects in a workspace.',
     { workspace_id: z.string().describe('Railway workspace ID') },
