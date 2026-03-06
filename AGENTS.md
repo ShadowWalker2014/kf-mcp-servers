@@ -2,7 +2,7 @@
 Central memory for all MCP servers in this repo. Update when adding/changing servers.
 
 ## How to build a new MCP server
-Follow the skill at `~/.cursor/skills/build-http-mcp/SKILL.md` — it contains the full template, deploy steps, and checklist.
+Follow the skill at `.cursor/skills/build-http-mcp/SKILL.md` — it contains the full template, deploy steps, and checklist.
 
 ## Repo Structure
 Each MCP server lives in its own subfolder. Each is deployed as an independent Railway service pointing to this git repo with a subfolder root.
