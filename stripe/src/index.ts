@@ -407,6 +407,148 @@ function addStripeTools(server: McpServer, stripe: Stripe) {
     }
   );
 
+  // ── Disputes ───────────────────────────────────────────────────────────────
+
+  server.tool("stripe_disputes",
+    `Fully manage Stripe disputes (chargebacks). Actions:
+- list: see all open disputes
+- retrieve: get a dispute with full evidence details and due date
+- update_evidence: add/stage text evidence WITHOUT submitting (submit=false, safe to call multiple times)
+- submit: submit staged evidence to the bank (irreversible — only one submission is allowed per dispute)
+- close: accept/concede the dispute (lose intentionally, stops fees from accruing)
+
+Evidence strategy: An agent should retrieve the dispute, check evidence_details.due_by for deadline, then call update_evidence with submit=false to stage evidence, then submit when ready. Key text fields that win disputes: product_description, customer_email_address, access_activity_log (login/usage data), refund_refusal_explanation, customer_purchase_ip, cancellation_rebuttal.`,
+    {
+      action: z.enum(['list', 'retrieve', 'update_evidence', 'submit', 'close']),
+      dispute_id: z.string().optional().describe("Dispute ID (required for retrieve, update_evidence, submit, close)"),
+
+      // list filters
+      charge_id: z.string().optional().describe("Filter by charge ID (for list)"),
+      payment_intent_id: z.string().optional().describe("Filter by payment intent ID (for list)"),
+      status: z.enum(['warning_needs_response', 'warning_under_review', 'warning_closed', 'needs_response', 'under_review', 'charge_refunded', 'won', 'lost']).optional().describe("Filter by status (for list). Start with 'needs_response' to find urgent disputes."),
+      limit: z.number().optional().describe("Max results for list (default 10, max 100)"),
+
+      // update_evidence: submit flag
+      submit: z.boolean().optional().describe("If true, immediately submit evidence to bank (irreversible). If false (default), stages evidence for review first. Always stage first, then submit when ready."),
+
+      // Evidence fields — all text, no file uploads required
+      product_description: z.string().optional().describe("Description of the product/service sold. What did the customer get?"),
+      customer_email_address: z.string().optional().describe("Customer's email address"),
+      customer_name: z.string().optional().describe("Customer's full name"),
+      customer_purchase_ip: z.string().optional().describe("IP address customer used to make the purchase"),
+      billing_address: z.string().optional().describe("Billing address the customer provided"),
+      access_activity_log: z.string().optional().describe("Server/activity logs showing customer accessed the product/service. Include IPs, timestamps, actions. Max 20,000 chars. This is one of the strongest evidence types for SaaS."),
+      refund_refusal_explanation: z.string().optional().describe("Why the customer is not entitled to a refund. Max 20,000 chars."),
+      refund_policy_disclosure: z.string().optional().describe("How/when the customer was shown the refund policy. Max 20,000 chars."),
+      cancellation_rebuttal: z.string().optional().describe("Why the subscription was NOT canceled as claimed. Max 20,000 chars."),
+      cancellation_policy_disclosure: z.string().optional().describe("How/when the customer was shown the cancellation policy. Max 20,000 chars."),
+      service_date: z.string().optional().describe("Date customer received or began receiving the service (human-readable format)"),
+      shipping_address: z.string().optional().describe("Address product was shipped to"),
+      shipping_carrier: z.string().optional().describe("Delivery service used (e.g. FedEx, UPS, USPS)"),
+      shipping_date: z.string().optional().describe("Date physical product began shipping (human-readable)"),
+      shipping_tracking_number: z.string().optional().describe("Tracking number(s) for shipped product"),
+      duplicate_charge_id: z.string().optional().describe("Stripe charge ID of the prior charge if this is claimed as a duplicate"),
+      duplicate_charge_explanation: z.string().optional().describe("Explanation of why this is NOT a duplicate of the prior charge. Max 20,000 chars."),
+      uncategorized_text: z.string().optional().describe("Any additional evidence or statements. Max 20,000 chars."),
+    },
+    async ({
+      action, dispute_id, charge_id, payment_intent_id, status, limit = 10, submit: submitEvidence = false,
+      product_description, customer_email_address, customer_name, customer_purchase_ip, billing_address,
+      access_activity_log, refund_refusal_explanation, refund_policy_disclosure,
+      cancellation_rebuttal, cancellation_policy_disclosure, service_date,
+      shipping_address, shipping_carrier, shipping_date, shipping_tracking_number,
+      duplicate_charge_id, duplicate_charge_explanation, uncategorized_text,
+    }) => {
+      try {
+        const validLimit = Math.min(Math.max(limit, 1), 100);
+
+        switch (action) {
+          case 'list': {
+            const disputes = await stripe.disputes.list({
+              limit: validLimit,
+              ...(charge_id && { charge: charge_id }),
+              ...(payment_intent_id && { payment_intent: payment_intent_id }),
+            });
+            // Add due date summary for urgency
+            const summary = disputes.data.map(d => ({
+              id: d.id,
+              amount: `$${d.amount / 100} ${d.currency.toUpperCase()}`,
+              status: d.status,
+              reason: d.reason,
+              due_by: d.evidence_details.due_by
+                ? new Date(d.evidence_details.due_by * 1000).toISOString().split('T')[0]
+                : null,
+              days_left: d.evidence_details.due_by
+                ? Math.ceil((d.evidence_details.due_by - Date.now() / 1000) / 86400)
+                : null,
+              has_evidence: d.evidence_details.has_evidence,
+              charge: d.charge,
+            }));
+            return ok({ disputes: summary, has_more: disputes.has_more },
+              `Found ${disputes.data.length} dispute(s). Urgent (needs_response): ${summary.filter(d => d.status === 'needs_response').length}`);
+          }
+
+          case 'retrieve': {
+            if (!dispute_id) return err('dispute_id is required for retrieve');
+            const dispute = await stripe.disputes.retrieve(dispute_id);
+            const daysLeft = dispute.evidence_details.due_by
+              ? Math.ceil((dispute.evidence_details.due_by - Date.now() / 1000) / 86400)
+              : null;
+            return ok(dispute,
+              `Dispute ${dispute_id}: ${dispute.status} | Reason: ${dispute.reason} | Due: ${daysLeft !== null ? `${daysLeft} days` : 'N/A'} | Evidence submitted: ${dispute.evidence_details.has_evidence}`);
+          }
+
+          case 'update_evidence': {
+            if (!dispute_id) return err('dispute_id is required for update_evidence');
+            const evidence: Stripe.DisputeUpdateParams.Evidence = {
+              ...(product_description && { product_description }),
+              ...(customer_email_address && { customer_email_address }),
+              ...(customer_name && { customer_name }),
+              ...(customer_purchase_ip && { customer_purchase_ip }),
+              ...(billing_address && { billing_address }),
+              ...(access_activity_log && { access_activity_log }),
+              ...(refund_refusal_explanation && { refund_refusal_explanation }),
+              ...(refund_policy_disclosure && { refund_policy_disclosure }),
+              ...(cancellation_rebuttal && { cancellation_rebuttal }),
+              ...(cancellation_policy_disclosure && { cancellation_policy_disclosure }),
+              ...(service_date && { service_date }),
+              ...(shipping_address && { shipping_address }),
+              ...(shipping_carrier && { shipping_carrier }),
+              ...(shipping_date && { shipping_date }),
+              ...(shipping_tracking_number && { shipping_tracking_number }),
+              ...(duplicate_charge_id && { duplicate_charge_id }),
+              ...(duplicate_charge_explanation && { duplicate_charge_explanation }),
+              ...(uncategorized_text && { uncategorized_text }),
+            };
+            const dispute = await stripe.disputes.update(dispute_id, { evidence, submit: submitEvidence });
+            const action_taken = submitEvidence ? 'Evidence SUBMITTED to bank (irreversible)' : 'Evidence staged (not yet submitted — call submit action when ready)';
+            return ok({
+              id: dispute.id,
+              status: dispute.status,
+              evidence_details: dispute.evidence_details,
+            }, action_taken);
+          }
+
+          case 'submit': {
+            if (!dispute_id) return err('dispute_id is required for submit');
+            const dispute = await stripe.disputes.update(dispute_id, { submit: true });
+            return ok({
+              id: dispute.id,
+              status: dispute.status,
+              submission_count: dispute.evidence_details.submission_count,
+            }, `Evidence submitted to bank for dispute ${dispute_id}. Status: ${dispute.status}`);
+          }
+
+          case 'close': {
+            if (!dispute_id) return err('dispute_id is required for close');
+            const dispute = await stripe.disputes.close(dispute_id);
+            return ok(dispute, `Dispute ${dispute_id} closed/accepted. Status: ${dispute.status}. The disputed amount will be returned to the cardholder.`);
+          }
+        }
+      } catch (e) { return err(e); }
+    }
+  );
+
   // ── Webhooks ───────────────────────────────────────────────────────────────
 
   server.tool("stripe_webhooks",
@@ -726,7 +868,7 @@ function addStripeTools(server: McpServer, stripe: Stripe) {
 // ─── MCP server factory ────────────────────────────────────────────────────────
 
 function createMcpServer(stripeClient: Stripe): McpServer {
-  const server = new McpServer({ name: "stripe-mcp", version: "2.1.0" });
+  const server = new McpServer({ name: "stripe-mcp", version: "2.2.0" });
   addStripeTools(server, stripeClient);
   return server;
 }
@@ -753,7 +895,7 @@ async function main() {
 
       if (parsedUrl.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'healthy', service: 'stripe-mcp', version: '2.1.0', tools: ['stripe_customers', 'stripe_subscriptions', 'stripe_products', 'stripe_prices', 'stripe_query', 'stripe_refunds', 'stripe_invoices', 'stripe_billing_portal_session', 'stripe_checkout', 'stripe_balance', 'stripe_webhooks', 'stripe_portal_config'] }));
+        res.end(JSON.stringify({ status: 'healthy', service: 'stripe-mcp', version: '2.2.0', tools: ['stripe_customers', 'stripe_subscriptions', 'stripe_products', 'stripe_prices', 'stripe_query', 'stripe_refunds', 'stripe_invoices', 'stripe_billing_portal_session', 'stripe_checkout', 'stripe_balance', 'stripe_disputes', 'stripe_webhooks', 'stripe_portal_config'] }));
         return;
       }
 
