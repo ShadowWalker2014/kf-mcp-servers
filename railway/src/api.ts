@@ -31,25 +31,17 @@ export async function gql<T = unknown>(
 
 // ─── Queries ──────────────────────────────────────────────────────────────────
 
+// Returns account info + all workspaces. Requires an account-scoped token
+// (created at railway.com/account/tokens with "No workspace" selected).
 export async function getMe(token: string) {
-  // Account tokens support `me`; workspace tokens only support `workspace(workspaceId:...)`.
-  // Try account-level query first, fall back gracefully for workspace tokens.
-  try {
-    const data = await gql<{
-      me: {
-        name: string;
-        email: string;
-        workspaces: { id: string; name: string }[];
-      };
-    }>(token, `query { me { name email workspaces { id name } } }`);
-    return { type: 'account', ...data.me };
-  } catch {
-    // Workspace token — verify it works by hitting a neutral endpoint
-    return {
-      type: 'workspace',
-      note: 'Workspace-scoped token — me query not available. Token is valid. Use list_projects with your workspace ID.',
+  const data = await gql<{
+    me: {
+      name: string;
+      email: string;
+      workspaces: { id: string; name: string }[];
     };
-  }
+  }>(token, `query { me { name email workspaces { id name } } }`);
+  return data.me;
 }
 
 export async function listProjects(token: string, workspaceId: string) {

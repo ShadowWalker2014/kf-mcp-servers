@@ -1,12 +1,18 @@
 # railway
 
-HTTP MCP server for Railway infrastructure management. Uses Railway's GraphQL API directly — no CLI required. Pass your Railway account token per request.
+HTTP MCP server for Railway infrastructure management. Uses Railway's GraphQL API directly — no CLI required.
+
+## Requirements
+
+**Account-scoped token required.** Create one at [railway.com/account/tokens](https://railway.com/account/tokens) → New Token → select **"No workspace"**.
+
+> Workspace tokens cannot call `list_workspaces` (the `me` query is restricted). Use account tokens for full autonomous operation.
 
 ## Tools
 
 | Tool | Description |
 |------|-------------|
-| `check_status` | Verify token, get account info + workspaces |
+| `list_workspaces` | **Start here.** Returns your account info + all workspace IDs |
 | `list_projects` | List all projects in a workspace |
 | `list_services` | List services in a project |
 | `list_environments` | List environments in a project |
@@ -19,36 +25,46 @@ HTTP MCP server for Railway infrastructure management. Uses Railway's GraphQL AP
 | `create_environment` | Create a new environment in a project |
 | `generate_domain` | Generate a `*.up.railway.app` domain |
 
+## End-to-end flow
+
+```
+list_workspaces
+  → { name: "KF Production", workspaces: [{ id: "1a7943e1-...", name: "KF Production" }] }
+
+list_projects(workspace_id: "1a7943e1-...")
+  → [{ id: "proj_...", name: "Blink", services: [...], environments: [...] }]
+
+list_services(project_id: "proj_...")
+  → [{ id: "svc_...", name: "web" }]
+
+list_environments(project_id: "proj_...")
+  → [{ id: "env_...", name: "production" }]
+
+list_deployments(project_id, environment_id, service_id)
+  → [{ id: "dep_...", status: "SUCCESS" }]
+
+get_logs(deployment_id, log_type: "deploy")
+  → timestamped log lines
+
+set_variable(project_id, environment_id, service_id, name, value)
+  → sets env var
+
+redeploy(environment_id, service_id)
+  → triggers new deployment
+```
+
 ## Auth
 
 | Header | Purpose |
 |--------|---------|
 | `Authorization: Bearer <key>` | MCP server auth (`MCP_API_KEY`) |
-| `X-Railway-Token: <token>` | Railway account token |
-
-The `X-Railway-Token` header takes priority over the `RAILWAY_TOKEN` env var. Each user/machine passes their own token — Railway permissions are scoped to that token.
-
-**Get your token**: [railway.com/account/tokens](https://railway.com/account/tokens) → create an Account token for full access.
-
-## Typical workflow
-
-```
-1. check_status           → see your workspaces + workspace IDs
-2. list_projects          → get project IDs
-3. list_services          → get service IDs
-4. list_environments      → get environment IDs
-5. list_deployments       → get deployment IDs
-6. get_logs               → debug a deployment
-7. list_variables         → inspect env vars
-8. set_variable           → update an env var
-9. redeploy               → trigger new deployment
-```
+| `X-Railway-Token: <token>` | Railway **account** token |
 
 ## Environment variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MCP_API_KEY` | No | Enables bearer auth. If unset, server is open. |
+| `MCP_API_KEY` | No | Enables bearer auth on the MCP server |
 | `RAILWAY_TOKEN` | No | Default token if no `X-Railway-Token` header |
 | `PORT` | No | Defaults to `3400` |
 
@@ -58,8 +74,8 @@ The `X-Railway-Token` header takes priority over the `RAILWAY_TOKEN` env var. Ea
 "railway": {
   "url": "https://railway-production-9f1b.up.railway.app/mcp",
   "headers": {
-    "Authorization": "Bearer <MCP_API_KEY>",
-    "X-Railway-Token": "<your-railway-account-token>"
+    "Authorization": "Bearer blnk_68f3c7384ce7f296ff1f3c4d88fcfbf4",
+    "X-Railway-Token": "<account token from railway.com/account/tokens>"
   }
 }
 ```
@@ -71,10 +87,9 @@ npm install
 MCP_API_KEY=secret npm run dev
 ```
 
-Then pass `X-Railway-Token` per request. Health check: `GET http://localhost:3400/health`
+Health: `GET http://localhost:3400/health`
 
 ## Railway deployment
 
 - **Root Directory**: `railway/`
-- **Env vars**: `MCP_API_KEY` (required)
-- Calls `https://backboard.railway.com/graphql/v2` — no outbound restrictions needed beyond HTTPS
+- **Env vars**: `MCP_API_KEY`
