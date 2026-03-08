@@ -123,11 +123,16 @@ export async function getProject(token: string, projectId: string) {
 }
 
 export async function createProject(token: string, name: string, description?: string, teamId?: string) {
+  // Only include teamId in the input when explicitly provided — passing null/undefined causes "Workspace not found"
+  const input: Record<string, unknown> = { name };
+  if (description) input.description = description;
+  if (teamId) input.teamId = teamId;
+
   const data = await gql<{ projectCreate: { id: string; name: string; description: string } }>(token, `
     mutation($input: ProjectCreateInput!) {
       projectCreate(input: $input) { id name description }
     }
-  `, { input: { name, description, teamId } });
+  `, { input });
   return data.projectCreate;
 }
 
