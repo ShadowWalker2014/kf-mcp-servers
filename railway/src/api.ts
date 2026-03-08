@@ -122,11 +122,12 @@ export async function getProject(token: string, projectId: string) {
   return data.project;
 }
 
-export async function createProject(token: string, name: string, description?: string, teamId?: string) {
-  // Only include teamId in the input when explicitly provided — passing null/undefined causes "Workspace not found"
+export async function createProject(token: string, name: string, description?: string, workspaceId?: string) {
+  // Railway requires workspaceId when using a workspace-scoped token.
+  // Omit the field entirely when not provided (passing null causes "Workspace not found").
   const input: Record<string, unknown> = { name };
   if (description) input.description = description;
-  if (teamId) input.teamId = teamId;
+  if (workspaceId) input.workspaceId = workspaceId;
 
   const data = await gql<{ projectCreate: { id: string; name: string; description: string } }>(token, `
     mutation($input: ProjectCreateInput!) {

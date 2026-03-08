@@ -88,14 +88,14 @@ function createMcpServer(railwayToken: string): McpServer {
     }
   );
 
-  server.tool('create_project', 'Create a new Railway project. In the vast majority of cases, do NOT set team_id — just provide a name and the project will be created in your personal account. team_id is ONLY needed for dedicated team/org workspaces and must be the team\'s own UUID (NOT the workspace ID from list_workspaces — those are workspace IDs, not team IDs). Passing a workspace ID as team_id will cause a "Workspace not found" error.',
+  server.tool('create_project', 'Create a new Railway project. If your token is workspace-scoped (most cases), you MUST pass workspace_id — get it from list_workspaces. If using a personal account token and you get "You must specify a workspaceId", call list_workspaces and pass the returned workspace ID here.',
     {
       name: z.string().describe('Project name'),
       description: z.string().optional().describe('Project description'),
-      team_id: z.string().optional().describe('Team UUID — leave blank for personal account. Do NOT pass workspace IDs from list_workspaces here.'),
+      workspace_id: z.string().optional().describe('Workspace ID from list_workspaces. Required when using a workspace-scoped token. Pass the id from list_workspaces.workspaces[].id'),
     },
-    async ({ name, description, team_id }) => {
-      const project = await createProject(railwayToken, name, description, team_id);
+    async ({ name, description, workspace_id }) => {
+      const project = await createProject(railwayToken, name, description, workspace_id);
       return { content: [{ type: 'text', text: JSON.stringify(project, null, 2) }] };
     }
   );
