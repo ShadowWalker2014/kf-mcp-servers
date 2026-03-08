@@ -963,3 +963,491 @@ export async function createPrivateNetworkEndpoint(
 export async function deletePrivateNetworkEndpoint(token: string, id: string) {
   await gql(token, `mutation($id: String!) { privateNetworkEndpointDelete(id: $id) }`, { id });
 }
+
+export async function renamePrivateNetworkEndpoint(token: string, id: string, privateNetworkId: string, dnsName: string) {
+  await gql(token, `
+    mutation($id: String!, $privateNetworkId: String!, $dnsName: String!) {
+      privateNetworkEndpointRename(id: $id, privateNetworkId: $privateNetworkId, dnsName: $dnsName)
+    }
+  `, { id, privateNetworkId, dnsName });
+}
+
+export async function deleteAllPrivateNetworks(token: string, environmentId: string) {
+  await gql(token, `
+    mutation($environmentId: String!) { privateNetworksForEnvironmentDelete(environmentId: $environmentId) }
+  `, { environmentId });
+}
+
+// ─── Volume Backups ───────────────────────────────────────────────────────────
+
+export async function createVolumeBackup(token: string, volumeInstanceId: string) {
+  const data = await gql<{ volumeInstanceBackupCreate: { workflowId: string } }>(token, `
+    mutation($volumeInstanceId: String!) {
+      volumeInstanceBackupCreate(volumeInstanceId: $volumeInstanceId) { workflowId }
+    }
+  `, { volumeInstanceId });
+  return data.volumeInstanceBackupCreate;
+}
+
+export async function deleteVolumeBackup(token: string, volumeInstanceId: string, volumeInstanceBackupId: string) {
+  const data = await gql<{ volumeInstanceBackupDelete: { workflowId: string } }>(token, `
+    mutation($volumeInstanceId: String!, $volumeInstanceBackupId: String!) {
+      volumeInstanceBackupDelete(volumeInstanceId: $volumeInstanceId, volumeInstanceBackupId: $volumeInstanceBackupId) { workflowId }
+    }
+  `, { volumeInstanceId, volumeInstanceBackupId });
+  return data.volumeInstanceBackupDelete;
+}
+
+export async function lockVolumeBackup(token: string, volumeInstanceId: string, volumeInstanceBackupId: string) {
+  await gql(token, `
+    mutation($volumeInstanceId: String!, $volumeInstanceBackupId: String!) {
+      volumeInstanceBackupLock(volumeInstanceId: $volumeInstanceId, volumeInstanceBackupId: $volumeInstanceBackupId)
+    }
+  `, { volumeInstanceId, volumeInstanceBackupId });
+}
+
+export async function restoreVolumeBackup(token: string, volumeInstanceId: string, volumeInstanceBackupId: string) {
+  const data = await gql<{ volumeInstanceBackupRestore: { workflowId: string } }>(token, `
+    mutation($volumeInstanceId: String!, $volumeInstanceBackupId: String!) {
+      volumeInstanceBackupRestore(volumeInstanceId: $volumeInstanceId, volumeInstanceBackupId: $volumeInstanceBackupId) { workflowId }
+    }
+  `, { volumeInstanceId, volumeInstanceBackupId });
+  return data.volumeInstanceBackupRestore;
+}
+
+export async function listVolumeBackupSchedules(token: string, volumeInstanceId: string) {
+  const data = await gql<{
+    volumeInstanceBackupScheduleList: { id: string; name: string; cron: string; kind: string; retentionSeconds: number; createdAt: string }[];
+  }>(token, `
+    query($volumeInstanceId: String!) {
+      volumeInstanceBackupScheduleList(volumeInstanceId: $volumeInstanceId) { id name cron kind retentionSeconds createdAt }
+    }
+  `, { volumeInstanceId });
+  return data.volumeInstanceBackupScheduleList;
+}
+
+export async function updateVolumeBackupSchedule(token: string, volumeInstanceId: string, kinds: string[]) {
+  await gql(token, `
+    mutation($volumeInstanceId: String!, $kinds: [VolumeInstanceBackupScheduleKind!]!) {
+      volumeInstanceBackupScheduleUpdate(volumeInstanceId: $volumeInstanceId, kinds: $kinds)
+    }
+  `, { volumeInstanceId, kinds });
+}
+
+// ─── Integrations ────────────────────────────────────────────────────────────
+
+export async function listIntegrations(token: string, projectId: string) {
+  const data = await gql<{
+    integrations: { edges: { node: { id: string; name: string; config: Record<string, unknown>; projectId: string } }[] };
+  }>(token, `
+    query($projectId: String!) {
+      integrations(projectId: $projectId) { edges { node { id name config projectId } } }
+    }
+  `, { projectId });
+  return data.integrations.edges.map((e) => e.node);
+}
+
+export async function createIntegration(token: string, projectId: string, name: string, config: Record<string, unknown>) {
+  const data = await gql<{ integrationCreate: { id: string; name: string; config: Record<string, unknown> } }>(token, `
+    mutation($input: IntegrationCreateInput!) {
+      integrationCreate(input: $input) { id name config projectId }
+    }
+  `, { input: { projectId, name, config } });
+  return data.integrationCreate;
+}
+
+export async function deleteIntegration(token: string, id: string) {
+  await gql(token, `mutation($id: String!) { integrationDelete(id: $id) }`, { id });
+}
+
+export async function updateIntegration(token: string, id: string, config: Record<string, unknown>) {
+  const data = await gql<{ integrationUpdate: { id: string; name: string } }>(token, `
+    mutation($id: String!, $input: IntegrationUpdateInput!) {
+      integrationUpdate(id: $id, input: $input) { id name config }
+    }
+  `, { id, input: { config } });
+  return data.integrationUpdate;
+}
+
+// ─── Shared Variables ────────────────────────────────────────────────────────
+
+export async function configureSharedVariable(
+  token: string,
+  environmentId: string,
+  name: string,
+  serviceIds: string[]
+) {
+  const data = await gql<{
+    sharedVariableConfigure: { id: string; name: string; environmentId: string; serviceId: string | null };
+  }>(token, `
+    mutation($input: SharedVariableConfigureInput!) {
+      sharedVariableConfigure(input: $input) { id name environmentId serviceId references }
+    }
+  `, { input: { environmentId, name, serviceIds } });
+  return data.sharedVariableConfigure;
+}
+
+// ─── Project Transfer / Leave ────────────────────────────────────────────────
+
+export async function transferProjectToTeam(token: string, id: string, teamId: string) {
+  await gql(token, `
+    mutation($id: String!, $input: ProjectTransferToTeamInput!) { projectTransferToTeam(id: $id, input: $input) }
+  `, { id, input: { teamId } });
+}
+
+export async function leaveProject(token: string, id: string) {
+  await gql(token, `mutation($id: String!) { projectLeave(id: $id) }`, { id });
+}
+
+// ─── Webhooks (update) ───────────────────────────────────────────────────────
+
+export async function updateWebhook(token: string, id: string, input: { url?: string; secret?: string; filters?: string[] }) {
+  const data = await gql<{ webhookUpdate: { id: string; url: string; projectId: string } }>(token, `
+    mutation($id: String!, $input: WebhookUpdateInput!) {
+      webhookUpdate(id: $id, input: $input) { id url projectId filters lastStatus }
+    }
+  `, { id, input });
+  return data.webhookUpdate;
+}
+
+// ─── Usage Limits ────────────────────────────────────────────────────────────
+
+export async function setUsageLimit(token: string, projectId: string, hardLimitDollars: number, notificationDollars?: number) {
+  await gql(token, `
+    mutation($input: UsageLimitSetInput!) { usageLimitSet(input: $input) }
+  `, { input: { projectId, hardLimitDollars, notificationDollars } });
+}
+
+export async function removeUsageLimit(token: string, projectId: string) {
+  await gql(token, `
+    mutation($input: UsageLimitRemoveInput!) { usageLimitRemove(input: $input) }
+  `, { input: { projectId } });
+}
+
+// ─── Base Environment ────────────────────────────────────────────────────────
+
+export async function overrideBaseEnvironment(token: string, environmentId: string, baseEnvironmentOverrideId: string | null) {
+  await gql(token, `
+    mutation($id: String!, $input: BaseEnvironmentOverrideInput!) { baseEnvironmentOverride(id: $id, input: $input) }
+  `, { id: environmentId, input: { baseEnvironmentOverrideId } });
+}
+
+// ─── Egress Gateways ─────────────────────────────────────────────────────────
+
+export async function listEgressGateways(token: string, environmentId: string, serviceId: string) {
+  const data = await gql<{
+    egressGateways: { ipv4: string; region: string }[];
+  }>(token, `
+    query($environmentId: String!, $serviceId: String!) {
+      egressGateways(environmentId: $environmentId, serviceId: $serviceId) { ipv4 region }
+    }
+  `, { environmentId, serviceId });
+  return data.egressGateways;
+}
+
+export async function createEgressGateway(token: string, environmentId: string, serviceId: string, region: string) {
+  const data = await gql<{ egressGatewayAssociationCreate: { ipv4: string; region: string } }>(token, `
+    mutation($input: EgressGatewayCreateInput!) {
+      egressGatewayAssociationCreate(input: $input) { ipv4 region }
+    }
+  `, { input: { environmentId, serviceId, region } });
+  return data.egressGatewayAssociationCreate;
+}
+
+export async function clearEgressGateways(token: string, environmentId: string, serviceId: string) {
+  await gql(token, `
+    mutation($input: EgressGatewayServiceTargetInput!) { egressGatewayAssociationsClear(input: $input) }
+  `, { input: { environmentId, serviceId } });
+}
+
+// ─── Templates ───────────────────────────────────────────────────────────────
+
+export async function deployTemplate(token: string, templateCode: string, projectId?: string, environmentId?: string, services?: Record<string, unknown>) {
+  const data = await gql<{ templateDeployV2: { projectId: string; workflowId: string } }>(token, `
+    mutation($input: TemplateDeployV2Input!) {
+      templateDeployV2(input: $input) { projectId workflowId }
+    }
+  `, { input: { templateCode, projectId, environmentId, services } });
+  return data.templateDeployV2;
+}
+
+// ─── Docker Compose ──────────────────────────────────────────────────────────
+
+export async function importDockerCompose(token: string, projectId: string, environmentId: string, yaml: string) {
+  const data = await gql<{ dockerComposeImport: { errors: string[]; patch: string } }>(token, `
+    mutation($projectId: String!, $environmentId: String!, $yaml: String!) {
+      dockerComposeImport(projectId: $projectId, environmentId: $environmentId, yaml: $yaml) { errors patch }
+    }
+  `, { projectId, environmentId, yaml });
+  return data.dockerComposeImport;
+}
+
+// ─── Metrics & Usage ─────────────────────────────────────────────────────────
+
+export async function getMetrics(
+  token: string,
+  startDate: string,
+  measurements: string[],
+  options?: {
+    endDate?: string;
+    environmentId?: string;
+    serviceId?: string;
+    projectId?: string;
+    groupBy?: string[];
+    sampleRateSeconds?: number;
+  }
+) {
+  const data = await gql<{
+    metrics: { measurement: string; values: { timestamp: string; value: number }[] }[];
+  }>(token, `
+    query($startDate: DateTime!, $measurements: [MetricMeasurement!]!, $endDate: DateTime, $environmentId: String, $serviceId: String, $projectId: String, $groupBy: [MetricTag]!, $sampleRateSeconds: Int) {
+      metrics(startDate: $startDate, measurements: $measurements, endDate: $endDate, environmentId: $environmentId, serviceId: $serviceId, projectId: $projectId, groupBy: $groupBy, sampleRateSeconds: $sampleRateSeconds) {
+        measurement
+        values { timestamp value }
+      }
+    }
+  `, {
+    startDate, measurements,
+    endDate: options?.endDate,
+    environmentId: options?.environmentId,
+    serviceId: options?.serviceId,
+    projectId: options?.projectId,
+    groupBy: options?.groupBy ?? [],
+    sampleRateSeconds: options?.sampleRateSeconds,
+  });
+  return data.metrics;
+}
+
+export async function getUsage(
+  token: string,
+  measurements: string[],
+  options?: {
+    startDate?: string;
+    endDate?: string;
+    projectId?: string;
+    teamId?: string;
+    groupBy?: string[];
+  }
+) {
+  const data = await gql<{
+    usage: { measurement: string; value: number }[];
+  }>(token, `
+    query($measurements: [MetricMeasurement!]!, $startDate: DateTime, $endDate: DateTime, $projectId: String, $teamId: String, $groupBy: [MetricTag]!) {
+      usage(measurements: $measurements, startDate: $startDate, endDate: $endDate, projectId: $projectId, teamId: $teamId, groupBy: $groupBy) {
+        measurement value
+      }
+    }
+  `, {
+    measurements,
+    startDate: options?.startDate,
+    endDate: options?.endDate,
+    projectId: options?.projectId,
+    teamId: options?.teamId,
+    groupBy: options?.groupBy ?? [],
+  });
+  return data.usage;
+}
+
+export async function getEstimatedUsage(token: string, measurements: string[], projectId?: string, teamId?: string) {
+  const data = await gql<{
+    estimatedUsage: { measurement: string; estimatedValue: number; projectId: string }[];
+  }>(token, `
+    query($measurements: [MetricMeasurement!]!, $projectId: String, $teamId: String) {
+      estimatedUsage(measurements: $measurements, projectId: $projectId, teamId: $teamId) {
+        measurement estimatedValue projectId
+      }
+    }
+  `, { measurements, projectId, teamId });
+  return data.estimatedUsage;
+}
+
+// ─── Service extras ───────────────────────────────────────────────────────────
+
+export async function removeServiceUpstreamUrl(token: string, id: string) {
+  const data = await gql<{ serviceRemoveUpstreamUrl: { id: string; name: string } }>(token, `
+    mutation($id: String!) { serviceRemoveUpstreamUrl(id: $id) { id name projectId } }
+  `, { id });
+  return data.serviceRemoveUpstreamUrl;
+}
+
+export async function getServiceInstanceLimits(token: string, projectId: string, environmentId: string, serviceId: string) {
+  const data = await gql<{ serviceInstanceLimits: Record<string, unknown> }>(token, `
+    query($projectId: String!, $environmentId: String!, $serviceId: String!) {
+      serviceInstanceLimits(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId)
+    }
+  `, { projectId, environmentId, serviceId });
+  return data.serviceInstanceLimits;
+}
+
+export async function updateServiceInstanceLimits(
+  token: string,
+  input: { projectId: string; environmentId: string; serviceId: string; cpuLimit?: number; memoryLimitMB?: number; cpuRequest?: number; memoryRequestMB?: number }
+) {
+  await gql(token, `
+    mutation($input: ServiceInstanceLimitsUpdateInput!) { serviceInstanceLimitsUpdate(input: $input) }
+  `, { input });
+}
+
+// ─── Plugin extras ────────────────────────────────────────────────────────────
+
+export async function getPlugin(token: string, id: string) {
+  const data = await gql<{
+    plugin: { id: string; name: string; friendlyName: string; status: string; createdAt: string };
+  }>(token, `
+    query($id: String!) { plugin(id: $id) { id name friendlyName status createdAt logsEnabled } }
+  `, { id });
+  return data.plugin;
+}
+
+export async function getPluginLogs(token: string, pluginId: string, environmentId: string, filter?: string, limit?: number) {
+  const data = await gql<{
+    pluginLogs: { timestamp: string; message: string; severity: string }[];
+  }>(token, `
+    query($pluginId: String!, $environmentId: String!, $filter: String, $limit: Int) {
+      pluginLogs(pluginId: $pluginId, environmentId: $environmentId, filter: $filter, limit: $limit) { timestamp message severity }
+    }
+  `, { pluginId, environmentId, filter, limit });
+  return data.pluginLogs;
+}
+
+// ─── Variables for deployment ────────────────────────────────────────────────
+
+export async function getVariablesForDeployment(token: string, projectId: string, environmentId: string, serviceId: string) {
+  const data = await gql<{ variablesForServiceDeployment: Record<string, string> }>(token, `
+    query($projectId: String!, $environmentId: String!, $serviceId: String!) {
+      variablesForServiceDeployment(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId)
+    }
+  `, { projectId, environmentId, serviceId });
+  return data.variablesForServiceDeployment;
+}
+
+// ─── Deployment snapshot ────────────────────────────────────────────────────
+
+export async function getDeploymentSnapshot(token: string, deploymentId: string) {
+  const data = await gql<{
+    deploymentSnapshot: { id: string; createdAt: string; updatedAt: string; variables: Record<string, string> };
+  }>(token, `
+    query($deploymentId: String!) {
+      deploymentSnapshot(deploymentId: $deploymentId) { id createdAt updatedAt variables }
+    }
+  `, { deploymentId });
+  return data.deploymentSnapshot;
+}
+
+// ─── API Tokens ──────────────────────────────────────────────────────────────
+
+export async function createApiToken(token: string, name: string, teamId?: string) {
+  const data = await gql<{ apiTokenCreate: string }>(token, `
+    mutation($input: ApiTokenCreateInput!) { apiTokenCreate(input: $input) }
+  `, { input: { name, teamId } });
+  return data.apiTokenCreate;
+}
+
+export async function deleteApiToken(token: string, id: string) {
+  await gql(token, `mutation($id: String!) { apiTokenDelete(id: $id) }`, { id });
+}
+
+// ─── Environment getter ──────────────────────────────────────────────────────
+
+export async function getEnvironment(token: string, id: string) {
+  const data = await gql<{
+    environment: { id: string; name: string; projectId: string; createdAt: string; isEphemeral: boolean };
+  }>(token, `
+    query($id: String!) {
+      environment(id: $id) { id name projectId createdAt isEphemeral unmergedChangesCount }
+    }
+  `, { id });
+  return data.environment;
+}
+
+// ─── GitHub checks ───────────────────────────────────────────────────────────
+
+export async function checkGithubRepoAccess(token: string, fullRepoName: string) {
+  const data = await gql<{ gitHubRepoAccessAvailable: { hasAccess: boolean; isPublic: boolean } }>(token, `
+    query($fullRepoName: String!) { gitHubRepoAccessAvailable(fullRepoName: $fullRepoName) { hasAccess isPublic } }
+  `, { fullRepoName });
+  return data.gitHubRepoAccessAvailable;
+}
+
+// ─── Workflow status ─────────────────────────────────────────────────────────
+
+export async function getWorkflowStatus(token: string, projectId: string, workflowId: string) {
+  const data = await gql<{ workflowStatus: { status: string; error: string | null } }>(token, `
+    query($projectId: String!, $workflowId: String!) {
+      workflowStatus(projectId: $projectId, workflowId: $workflowId) { status error }
+    }
+  `, { projectId, workflowId });
+  return data.workflowStatus;
+}
+
+// ─── Plugin extras ────────────────────────────────────────────────────────────
+
+export async function startPlugin(token: string, id: string, environmentId: string) {
+  await gql(token, `
+    mutation($id: String!, $input: PluginRestartInput!) { pluginStart(id: $id, input: $input) }
+  `, { id, input: { environmentId } });
+}
+
+export async function updatePlugin(token: string, id: string, input: { logsEnabled?: boolean }) {
+  const data = await gql<{ pluginUpdate: { id: string; name: string; status: string } }>(token, `
+    mutation($id: String!, $input: PluginUpdateInput!) {
+      pluginUpdate(id: $id, input: $input) { id name friendlyName status }
+    }
+  `, { id, input });
+  return data.pluginUpdate;
+}
+
+export async function resetPlugin(token: string, id: string, environmentId: string) {
+  await gql(token, `
+    mutation($id: String!, $input: ResetPluginInput!) { pluginReset(id: $id, input: $input) }
+  `, { id, input: { environmentId } });
+}
+
+export async function resetPluginCredentials(token: string, id: string, environmentId: string) {
+  await gql(token, `
+    mutation($id: String!, $input: ResetPluginCredentialsInput!) { pluginResetCredentials(id: $id, input: $input) }
+  `, { id, input: { environmentId } });
+}
+
+// ─── GitHub extras ───────────────────────────────────────────────────────────
+
+export async function updateGithubRepo(token: string, input: { projectId: string; serviceId: string; repo?: string; branch?: string; rootDirectory?: string }) {
+  await gql(token, `
+    mutation($input: GitHubRepoUpdateInput!) { githubRepoUpdate(input: $input) }
+  `, { input });
+}
+
+// ─── Workspace management ─────────────────────────────────────────────────────
+
+export async function updateWorkspace(token: string, id: string, name: string) {
+  await gql(token, `
+    mutation($id: String!, $input: WorkspaceUpdateInput!) { workspaceUpdate(id: $id, input: $input) }
+  `, { id, input: { name } });
+}
+
+export async function deleteWorkspace(token: string, id: string) {
+  await gql(token, `mutation($id: String!) { workspaceDelete(id: $id) }`, { id });
+}
+
+export async function leaveWorkspace(token: string, id: string) {
+  await gql(token, `mutation($id: String!) { workspaceLeave(id: $id) }`, { id });
+}
+
+// ─── Project scheduled deletion ──────────────────────────────────────────────
+
+export async function scheduleProjectDelete(token: string, id: string) {
+  await gql(token, `mutation($id: String!) { projectScheduleDelete(id: $id) }`, { id });
+}
+
+export async function cancelScheduledProjectDelete(token: string, id: string) {
+  await gql(token, `mutation($id: String!) { projectScheduleDeleteCancel(id: $id) }`, { id });
+}
+
+// ─── Project invitation ───────────────────────────────────────────────────────
+
+export async function resendProjectInvitation(token: string, id: string) {
+  const data = await gql<{ projectInvitationResend: { id: string; email: string } }>(token, `
+    mutation($id: String!) { projectInvitationResend(id: $id) { id email isExpired } }
+  `, { id });
+  return data.projectInvitationResend;
+}

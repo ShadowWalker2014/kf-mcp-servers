@@ -6,24 +6,44 @@ import {
   getMe, listProjects, getProject, createProject, updateProject, deleteProject,
   listProjectMembers, inviteProjectUser, removeProjectMember, updateProjectMember,
   createProjectToken, deleteProjectToken, createProjectInvitation, deleteProjectInvitation,
+  transferProjectToTeam, leaveProject,
   listServices, getService, createService, updateService, deleteService,
-  connectService, disconnectService, duplicateService,
+  connectService, disconnectService, duplicateService, removeServiceUpstreamUrl,
   getServiceInstance, updateServiceInstance, deployService,
-  listEnvironments, createEnvironment, deleteEnvironment, renameEnvironment, triggerEnvironmentDeploys,
+  getServiceInstanceLimits, updateServiceInstanceLimits,
+  listEnvironments, getEnvironment, createEnvironment, deleteEnvironment, renameEnvironment, triggerEnvironmentDeploys,
+  overrideBaseEnvironment,
   listDeployments, getDeployment, getDeploymentLogs, getBuildLogs, getEnvironmentLogs, getHttpLogs,
+  getDeploymentSnapshot,
   redeployService, restartDeployment, cancelDeployment, stopDeployment,
   rollbackDeployment, removeDeployment, approveDeployment,
   listDeploymentTriggers, createDeploymentTrigger, deleteDeploymentTrigger, updateDeploymentTrigger,
   getVariables, upsertVariable, bulkUpsertVariables, deleteVariable,
+  getVariablesForDeployment, configureSharedVariable,
   listDomains, checkCustomDomainAvailable, getDomainStatus, generateDomain, deleteServiceDomain,
   createCustomDomain, deleteCustomDomain, updateCustomDomain,
   listTcpProxies, createTcpProxy, deleteTcpProxy,
-  createVolume, deleteVolume, updateVolume, updateVolumeMount, listVolumeBackups,
-  createPlugin, deletePlugin, restartPlugin,
-  listGithubRepos, listGithubBranches,
+  createVolume, deleteVolume, updateVolume, updateVolumeMount,
+  listVolumeBackups, createVolumeBackup, deleteVolumeBackup, lockVolumeBackup, restoreVolumeBackup,
+  listVolumeBackupSchedules, updateVolumeBackupSchedule,
+  createPlugin, deletePlugin, restartPlugin, getPlugin, getPluginLogs,
+  listGithubRepos, listGithubBranches, checkGithubRepoAccess,
   listRegions,
-  listWebhooks, createWebhook, deleteWebhook,
+  getMetrics, getUsage, getEstimatedUsage,
+  listWebhooks, createWebhook, deleteWebhook, updateWebhook,
   listPrivateNetworks, createPrivateNetwork, createPrivateNetworkEndpoint, deletePrivateNetworkEndpoint,
+  renamePrivateNetworkEndpoint, deleteAllPrivateNetworks,
+  listIntegrations, createIntegration, deleteIntegration, updateIntegration,
+  listEgressGateways, createEgressGateway, clearEgressGateways,
+  deployTemplate, importDockerCompose,
+  setUsageLimit, removeUsageLimit,
+  createApiToken, deleteApiToken,
+  getWorkflowStatus,
+  startPlugin, updatePlugin, resetPlugin, resetPluginCredentials,
+  updateGithubRepo,
+  updateWorkspace, deleteWorkspace, leaveWorkspace,
+  scheduleProjectDelete, cancelScheduledProjectDelete,
+  resendProjectInvitation,
 } from './api.js';
 
 const MCP_API_KEY = process.env.MCP_API_KEY;
@@ -968,6 +988,621 @@ function createMcpServer(railwayToken: string): McpServer {
     async ({ endpoint_id }) => {
       await deletePrivateNetworkEndpoint(railwayToken, endpoint_id);
       return { content: [{ type: 'text', text: `Private network endpoint ${endpoint_id} deleted.` }] };
+    }
+  );
+
+  server.tool('rename_private_network_endpoint', 'Rename a private network endpoint (change its DNS name).',
+    {
+      endpoint_id: z.string().describe('Private network endpoint ID'),
+      private_network_id: z.string().describe('Private network ID'),
+      dns_name: z.string().describe('New DNS name for the endpoint'),
+    },
+    async ({ endpoint_id, private_network_id, dns_name }) => {
+      await renamePrivateNetworkEndpoint(railwayToken, endpoint_id, private_network_id, dns_name);
+      return { content: [{ type: 'text', text: `Endpoint ${endpoint_id} renamed to ${dns_name}` }] };
+    }
+  );
+
+  server.tool('delete_all_private_networks', 'Delete all private networks in an environment.',
+    { environment_id: z.string().describe('Railway environment ID') },
+    async ({ environment_id }) => {
+      await deleteAllPrivateNetworks(railwayToken, environment_id);
+      return { content: [{ type: 'text', text: `All private networks deleted for environment ${environment_id}` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // VOLUME BACKUPS
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('create_volume_backup', 'Create a backup of a volume instance.',
+    { volume_instance_id: z.string().describe('Volume instance ID to backup') },
+    async ({ volume_instance_id }) => {
+      const result = await createVolumeBackup(railwayToken, volume_instance_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool('restore_volume_backup', 'Restore a volume from a backup.',
+    {
+      volume_instance_id: z.string().describe('Volume instance ID'),
+      backup_id: z.string().describe('Backup ID to restore from'),
+    },
+    async ({ volume_instance_id, backup_id }) => {
+      const result = await restoreVolumeBackup(railwayToken, volume_instance_id, backup_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool('delete_volume_backup', 'Delete a volume backup.',
+    {
+      volume_instance_id: z.string().describe('Volume instance ID'),
+      backup_id: z.string().describe('Backup ID to delete'),
+    },
+    async ({ volume_instance_id, backup_id }) => {
+      const result = await deleteVolumeBackup(railwayToken, volume_instance_id, backup_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool('lock_volume_backup', 'Lock a volume backup to prevent it from expiring.',
+    {
+      volume_instance_id: z.string().describe('Volume instance ID'),
+      backup_id: z.string().describe('Backup ID to lock'),
+    },
+    async ({ volume_instance_id, backup_id }) => {
+      await lockVolumeBackup(railwayToken, volume_instance_id, backup_id);
+      return { content: [{ type: 'text', text: `Backup ${backup_id} locked.` }] };
+    }
+  );
+
+  server.tool('list_volume_backup_schedules', 'List backup schedules for a volume instance.',
+    { volume_instance_id: z.string().describe('Volume instance ID') },
+    async ({ volume_instance_id }) => {
+      const schedules = await listVolumeBackupSchedules(railwayToken, volume_instance_id);
+      return { content: [{ type: 'text', text: JSON.stringify(schedules, null, 2) }] };
+    }
+  );
+
+  server.tool('update_volume_backup_schedule', 'Enable/update backup schedule kinds for a volume instance.',
+    {
+      volume_instance_id: z.string().describe('Volume instance ID'),
+      kinds: z.array(z.string()).describe('Backup schedule kinds to enable (e.g. ["HOURLY", "DAILY", "WEEKLY"])'),
+    },
+    async ({ volume_instance_id, kinds }) => {
+      await updateVolumeBackupSchedule(railwayToken, volume_instance_id, kinds);
+      return { content: [{ type: 'text', text: `Backup schedules updated for volume instance ${volume_instance_id}` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // INTEGRATIONS
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('list_integrations', 'List all integrations for a project (e.g. GitHub, Datadog).',
+    { project_id: z.string().describe('Railway project ID') },
+    async ({ project_id }) => {
+      const integrations = await listIntegrations(railwayToken, project_id);
+      return { content: [{ type: 'text', text: JSON.stringify(integrations, null, 2) }] };
+    }
+  );
+
+  server.tool('create_integration', 'Create a new integration for a project.',
+    {
+      project_id: z.string().describe('Railway project ID'),
+      name: z.string().describe('Integration name (e.g. "datadog", "github")'),
+      config: z.record(z.unknown()).describe('Integration configuration object'),
+    },
+    async ({ project_id, name, config }) => {
+      const integration = await createIntegration(railwayToken, project_id, name, config);
+      return { content: [{ type: 'text', text: JSON.stringify(integration, null, 2) }] };
+    }
+  );
+
+  server.tool('update_integration', 'Update an existing integration configuration.',
+    {
+      integration_id: z.string().describe('Integration ID'),
+      config: z.record(z.unknown()).describe('New configuration object'),
+    },
+    async ({ integration_id, config }) => {
+      const integration = await updateIntegration(railwayToken, integration_id, config);
+      return { content: [{ type: 'text', text: JSON.stringify(integration, null, 2) }] };
+    }
+  );
+
+  server.tool('delete_integration', 'Delete a project integration.',
+    { integration_id: z.string().describe('Integration ID to delete') },
+    async ({ integration_id }) => {
+      await deleteIntegration(railwayToken, integration_id);
+      return { content: [{ type: 'text', text: `Integration ${integration_id} deleted.` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // SHARED VARIABLES
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('configure_shared_variable', 'Configure a shared variable to be shared across multiple services in an environment.',
+    {
+      environment_id: z.string().describe('Railway environment ID'),
+      name: z.string().describe('Variable name to share'),
+      service_ids: z.array(z.string()).describe('Service IDs that should have access to this shared variable'),
+    },
+    async ({ environment_id, name, service_ids }) => {
+      const result = await configureSharedVariable(railwayToken, environment_id, name, service_ids);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool('get_variables_for_deployment', 'Get the fully resolved environment variables that a deployment actually runs with (includes referenced/shared vars).',
+    {
+      project_id: z.string().describe('Railway project ID'),
+      environment_id: z.string().describe('Railway environment ID'),
+      service_id: z.string().describe('Railway service ID'),
+    },
+    async ({ project_id, environment_id, service_id }) => {
+      const vars = await getVariablesForDeployment(railwayToken, project_id, environment_id, service_id);
+      return { content: [{ type: 'text', text: JSON.stringify(vars, null, 2) }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PROJECT TRANSFER / LEAVE
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('transfer_project_to_team', 'Transfer a project to a team/workspace.',
+    {
+      project_id: z.string().describe('Railway project ID to transfer'),
+      team_id: z.string().describe('Team/workspace ID to transfer to'),
+    },
+    async ({ project_id, team_id }) => {
+      await transferProjectToTeam(railwayToken, project_id, team_id);
+      return { content: [{ type: 'text', text: `Project ${project_id} transferred to team ${team_id}` }] };
+    }
+  );
+
+  server.tool('leave_project', 'Leave a project (remove yourself as a member).',
+    { project_id: z.string().describe('Railway project ID to leave') },
+    async ({ project_id }) => {
+      await leaveProject(railwayToken, project_id);
+      return { content: [{ type: 'text', text: `Left project ${project_id}` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // WEBHOOK UPDATE
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('update_webhook', 'Update a webhook URL, secret, or event filters.',
+    {
+      webhook_id: z.string().describe('Webhook ID to update'),
+      url: z.string().optional().describe('New webhook URL'),
+      secret: z.string().optional().describe('New signing secret'),
+      filters: z.array(z.string()).optional().describe('New event filter strings'),
+    },
+    async ({ webhook_id, url, secret, filters }) => {
+      const webhook = await updateWebhook(railwayToken, webhook_id, { url, secret, filters });
+      return { content: [{ type: 'text', text: JSON.stringify(webhook, null, 2) }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // USAGE LIMITS
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('set_usage_limit', 'Set a hard spending limit and optional notification threshold for a project.',
+    {
+      project_id: z.string().describe('Railway project ID'),
+      hard_limit_dollars: z.number().describe('Hard spending limit in USD (0 = unlimited)'),
+      notification_dollars: z.number().optional().describe('Dollar amount at which to send a notification alert'),
+    },
+    async ({ project_id, hard_limit_dollars, notification_dollars }) => {
+      await setUsageLimit(railwayToken, project_id, hard_limit_dollars, notification_dollars);
+      return { content: [{ type: 'text', text: `Usage limit set: $${hard_limit_dollars} hard limit for project ${project_id}` }] };
+    }
+  );
+
+  server.tool('remove_usage_limit', 'Remove spending limits from a project.',
+    { project_id: z.string().describe('Railway project ID') },
+    async ({ project_id }) => {
+      await removeUsageLimit(railwayToken, project_id);
+      return { content: [{ type: 'text', text: `Usage limit removed from project ${project_id}` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ENVIRONMENTS (EXTENDED)
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('get_environment', 'Get details of a single environment by ID.',
+    { environment_id: z.string().describe('Railway environment ID') },
+    async ({ environment_id }) => {
+      const env = await getEnvironment(railwayToken, environment_id);
+      return { content: [{ type: 'text', text: JSON.stringify(env, null, 2) }] };
+    }
+  );
+
+  server.tool('set_base_environment', 'Set or override the base environment that an environment inherits from.',
+    {
+      environment_id: z.string().describe('Railway environment ID'),
+      base_environment_id: z.string().nullable().describe('Base environment ID to inherit from (null to remove override)'),
+    },
+    async ({ environment_id, base_environment_id }) => {
+      await overrideBaseEnvironment(railwayToken, environment_id, base_environment_id);
+      return { content: [{ type: 'text', text: `Base environment set for ${environment_id}` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // EGRESS GATEWAYS (STATIC IPs)
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('list_egress_gateways', 'List egress gateways (static IPs) for a service.',
+    {
+      environment_id: z.string().describe('Railway environment ID'),
+      service_id: z.string().describe('Railway service ID'),
+    },
+    async ({ environment_id, service_id }) => {
+      const gateways = await listEgressGateways(railwayToken, environment_id, service_id);
+      return { content: [{ type: 'text', text: JSON.stringify(gateways, null, 2) }] };
+    }
+  );
+
+  server.tool('create_egress_gateway', 'Create an egress gateway to give a service a static outbound IP address.',
+    {
+      environment_id: z.string().describe('Railway environment ID'),
+      service_id: z.string().describe('Railway service ID'),
+      region: z.string().describe('Region for the egress gateway (e.g. "us-west2")'),
+    },
+    async ({ environment_id, service_id, region }) => {
+      const gateway = await createEgressGateway(railwayToken, environment_id, service_id, region);
+      return { content: [{ type: 'text', text: JSON.stringify(gateway, null, 2) }] };
+    }
+  );
+
+  server.tool('clear_egress_gateways', 'Remove all egress gateways from a service (removes static IP).',
+    {
+      environment_id: z.string().describe('Railway environment ID'),
+      service_id: z.string().describe('Railway service ID'),
+    },
+    async ({ environment_id, service_id }) => {
+      await clearEgressGateways(railwayToken, environment_id, service_id);
+      return { content: [{ type: 'text', text: `Egress gateways cleared for service ${service_id}` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // TEMPLATES
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('deploy_template', 'Deploy a Railway template to create a new project with preconfigured services.',
+    {
+      template_code: z.string().describe('Railway template code (from railway.app/templates)'),
+      project_id: z.string().optional().describe('Existing project ID to deploy into (omit to create new project)'),
+      environment_id: z.string().optional().describe('Environment ID to deploy into'),
+    },
+    async ({ template_code, project_id, environment_id }) => {
+      const result = await deployTemplate(railwayToken, template_code, project_id, environment_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DOCKER COMPOSE
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('import_docker_compose', 'Import a docker-compose.yml file to create services in a project.',
+    {
+      project_id: z.string().describe('Railway project ID'),
+      environment_id: z.string().describe('Railway environment ID'),
+      yaml: z.string().describe('Contents of the docker-compose.yml file'),
+    },
+    async ({ project_id, environment_id, yaml }) => {
+      const result = await importDockerCompose(railwayToken, project_id, environment_id, yaml);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // SERVICE (EXTENDED)
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('remove_service_upstream_url', 'Remove the upstream URL configuration from a service.',
+    { service_id: z.string().describe('Railway service ID') },
+    async ({ service_id }) => {
+      const result = await removeServiceUpstreamUrl(railwayToken, service_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool('get_service_resource_limits', 'Get the resource limits (CPU, memory) configured for a service instance.',
+    {
+      project_id: z.string().describe('Railway project ID'),
+      environment_id: z.string().describe('Railway environment ID'),
+      service_id: z.string().describe('Railway service ID'),
+    },
+    async ({ project_id, environment_id, service_id }) => {
+      const limits = await getServiceInstanceLimits(railwayToken, project_id, environment_id, service_id);
+      return { content: [{ type: 'text', text: JSON.stringify(limits, null, 2) }] };
+    }
+  );
+
+  server.tool('update_service_resource_limits', 'Update CPU and memory resource limits for a service instance.',
+    {
+      project_id: z.string().describe('Railway project ID'),
+      environment_id: z.string().describe('Railway environment ID'),
+      service_id: z.string().describe('Railway service ID'),
+      cpu_limit: z.number().optional().describe('CPU limit in vCPU cores (e.g. 1.0 = 1 vCPU)'),
+      memory_limit_mb: z.number().optional().describe('Memory limit in MB (e.g. 512)'),
+      cpu_request: z.number().optional().describe('CPU request/reservation in vCPU cores'),
+      memory_request_mb: z.number().optional().describe('Memory request/reservation in MB'),
+    },
+    async ({ project_id, environment_id, service_id, cpu_limit, memory_limit_mb, cpu_request, memory_request_mb }) => {
+      await updateServiceInstanceLimits(railwayToken, { projectId: project_id, environmentId: environment_id, serviceId: service_id, cpuLimit: cpu_limit, memoryLimitMB: memory_limit_mb, cpuRequest: cpu_request, memoryRequestMB: memory_request_mb });
+      return { content: [{ type: 'text', text: `Resource limits updated for service ${service_id}` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PLUGIN (EXTENDED)
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('get_plugin', 'Get details of a single plugin/database by ID.',
+    { plugin_id: z.string().describe('Plugin ID') },
+    async ({ plugin_id }) => {
+      const plugin = await getPlugin(railwayToken, plugin_id);
+      return { content: [{ type: 'text', text: JSON.stringify(plugin, null, 2) }] };
+    }
+  );
+
+  server.tool('get_plugin_logs', 'Get logs from a legacy database plugin.',
+    {
+      plugin_id: z.string().describe('Plugin ID'),
+      environment_id: z.string().describe('Railway environment ID'),
+      filter: z.string().optional().describe('Text filter for log messages'),
+      limit: z.number().optional().describe('Max log lines to return'),
+    },
+    async ({ plugin_id, environment_id, filter, limit }) => {
+      const logs = await getPluginLogs(railwayToken, plugin_id, environment_id, filter, limit);
+      const text = logs.map((l) => `[${l.timestamp}] ${l.severity}: ${l.message}`).join('\n');
+      return { content: [{ type: 'text', text: text || 'No logs found.' }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // METRICS & USAGE
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('get_metrics', 'Get resource metrics (CPU, memory, network) for a service over time.',
+    {
+      start_date: z.string().describe('Start date in ISO format (e.g. "2024-01-01T00:00:00Z")'),
+      measurements: z.array(z.string()).describe('Metric measurements to fetch. Valid values: CPU_USAGE, MEMORY_USAGE_GB, NETWORK_TX_KB, NETWORK_RX_KB, DISK_USAGE_GB'),
+      end_date: z.string().optional().describe('End date in ISO format (defaults to now)'),
+      environment_id: z.string().optional().describe('Filter by environment ID'),
+      service_id: z.string().optional().describe('Filter by service ID'),
+      project_id: z.string().optional().describe('Filter by project ID'),
+      sample_rate_seconds: z.number().optional().describe('Sampling interval in seconds'),
+    },
+    async ({ start_date, measurements, end_date, environment_id, service_id, project_id, sample_rate_seconds }) => {
+      const metrics = await getMetrics(railwayToken, start_date, measurements, { endDate: end_date, environmentId: environment_id, serviceId: service_id, projectId: project_id, sampleRateSeconds: sample_rate_seconds });
+      return { content: [{ type: 'text', text: JSON.stringify(metrics, null, 2) }] };
+    }
+  );
+
+  server.tool('get_usage', 'Get aggregated resource usage and costs for a project.',
+    {
+      measurements: z.array(z.string()).describe('Usage measurements: CPU_USAGE, MEMORY_USAGE_GB, DISK_USAGE_GB, NETWORK_TX_KB, NETWORK_RX_KB'),
+      project_id: z.string().optional().describe('Filter by project ID'),
+      team_id: z.string().optional().describe('Filter by team/workspace ID'),
+      start_date: z.string().optional().describe('Start date in ISO format'),
+      end_date: z.string().optional().describe('End date in ISO format'),
+    },
+    async ({ measurements, project_id, team_id, start_date, end_date }) => {
+      const usage = await getUsage(railwayToken, measurements, { projectId: project_id, teamId: team_id, startDate: start_date, endDate: end_date });
+      return { content: [{ type: 'text', text: JSON.stringify(usage, null, 2) }] };
+    }
+  );
+
+  server.tool('get_estimated_usage', 'Get estimated current month cost/usage for a project.',
+    {
+      measurements: z.array(z.string()).describe('Measurements: CPU_USAGE, MEMORY_USAGE_GB, DISK_USAGE_GB, NETWORK_TX_KB, NETWORK_RX_KB'),
+      project_id: z.string().optional().describe('Filter by project ID'),
+      team_id: z.string().optional().describe('Filter by team/workspace ID'),
+    },
+    async ({ measurements, project_id, team_id }) => {
+      const usage = await getEstimatedUsage(railwayToken, measurements, project_id, team_id);
+      return { content: [{ type: 'text', text: JSON.stringify(usage, null, 2) }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DEPLOYMENT (EXTENDED)
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('get_deployment_snapshot', 'Get the variable snapshot captured at the time of a deployment.',
+    { deployment_id: z.string().describe('Railway deployment ID') },
+    async ({ deployment_id }) => {
+      const snapshot = await getDeploymentSnapshot(railwayToken, deployment_id);
+      return { content: [{ type: 'text', text: JSON.stringify(snapshot, null, 2) }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // GITHUB (EXTENDED)
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('check_github_repo_access', 'Check if Railway has access to a GitHub repository.',
+    { full_repo_name: z.string().describe('Full GitHub repo name (e.g. "owner/repo")') },
+    async ({ full_repo_name }) => {
+      const result = await checkGithubRepoAccess(railwayToken, full_repo_name);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // API TOKENS
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('create_api_token', 'Create a new Railway API token.',
+    {
+      name: z.string().describe('Token name/label'),
+      team_id: z.string().optional().describe('Team ID to scope the token to (omit for account-scoped token)'),
+    },
+    async ({ name, team_id }) => {
+      const token = await createApiToken(railwayToken, name, team_id);
+      return { content: [{ type: 'text', text: `API token created: ${token}` }] };
+    }
+  );
+
+  server.tool('delete_api_token', 'Delete a Railway API token.',
+    { token_id: z.string().describe('API token ID to delete') },
+    async ({ token_id }) => {
+      await deleteApiToken(railwayToken, token_id);
+      return { content: [{ type: 'text', text: `API token ${token_id} deleted.` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // WORKFLOW STATUS
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('get_workflow_status', 'Poll the status of an async workflow (e.g. after template deploy).',
+    {
+      project_id: z.string().describe('Railway project ID'),
+      workflow_id: z.string().describe('Workflow ID returned from async operations like deploy_template'),
+    },
+    async ({ project_id, workflow_id }) => {
+      const status = await getWorkflowStatus(railwayToken, project_id, workflow_id);
+      return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PLUGIN (FULL LIFECYCLE)
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('start_plugin', 'Start a stopped legacy database plugin.',
+    {
+      plugin_id: z.string().describe('Plugin ID to start'),
+      environment_id: z.string().describe('Railway environment ID'),
+    },
+    async ({ plugin_id, environment_id }) => {
+      await startPlugin(railwayToken, plugin_id, environment_id);
+      return { content: [{ type: 'text', text: `Plugin ${plugin_id} started.` }] };
+    }
+  );
+
+  server.tool('update_plugin', 'Update a plugin\'s settings (e.g. enable logs).',
+    {
+      plugin_id: z.string().describe('Plugin ID'),
+      logs_enabled: z.boolean().optional().describe('Whether to enable logs for this plugin'),
+    },
+    async ({ plugin_id, logs_enabled }) => {
+      const result = await updatePlugin(railwayToken, plugin_id, { logsEnabled: logs_enabled });
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  server.tool('reset_plugin', 'Reset a plugin (wipe its data and restart with fresh state).',
+    {
+      plugin_id: z.string().describe('Plugin ID to reset'),
+      environment_id: z.string().describe('Railway environment ID'),
+    },
+    async ({ plugin_id, environment_id }) => {
+      await resetPlugin(railwayToken, plugin_id, environment_id);
+      return { content: [{ type: 'text', text: `Plugin ${plugin_id} reset.` }] };
+    }
+  );
+
+  server.tool('reset_plugin_credentials', 'Regenerate the credentials (connection string/password) for a plugin.',
+    {
+      plugin_id: z.string().describe('Plugin ID'),
+      environment_id: z.string().describe('Railway environment ID'),
+    },
+    async ({ plugin_id, environment_id }) => {
+      await resetPluginCredentials(railwayToken, plugin_id, environment_id);
+      return { content: [{ type: 'text', text: `Plugin ${plugin_id} credentials reset.` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // GITHUB (UPDATE REPO CONNECTION)
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('update_github_repo', 'Update the GitHub repository connection for a service (change branch, repo, or root directory).',
+    {
+      project_id: z.string().describe('Railway project ID'),
+      service_id: z.string().describe('Railway service ID'),
+      repo: z.string().optional().describe('New GitHub repo full name (e.g. "owner/repo")'),
+      branch: z.string().optional().describe('New branch to deploy'),
+      root_directory: z.string().optional().describe('New root directory within the repo'),
+    },
+    async ({ project_id, service_id, repo, branch, root_directory }) => {
+      await updateGithubRepo(railwayToken, { projectId: project_id, serviceId: service_id, repo, branch, rootDirectory: root_directory });
+      return { content: [{ type: 'text', text: `GitHub repo connection updated for service ${service_id}` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // WORKSPACE MANAGEMENT
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('update_workspace', 'Rename a Railway workspace.',
+    {
+      workspace_id: z.string().describe('Railway workspace ID'),
+      name: z.string().describe('New workspace name'),
+    },
+    async ({ workspace_id, name }) => {
+      await updateWorkspace(railwayToken, workspace_id, name);
+      return { content: [{ type: 'text', text: `Workspace ${workspace_id} renamed to ${name}` }] };
+    }
+  );
+
+  server.tool('delete_workspace', 'Delete a Railway workspace. Irreversible — all projects will be deleted.',
+    { workspace_id: z.string().describe('Railway workspace ID to delete') },
+    async ({ workspace_id }) => {
+      await deleteWorkspace(railwayToken, workspace_id);
+      return { content: [{ type: 'text', text: `Workspace ${workspace_id} deleted.` }] };
+    }
+  );
+
+  server.tool('leave_workspace', 'Leave a Railway workspace (remove yourself as a member).',
+    { workspace_id: z.string().describe('Railway workspace ID to leave') },
+    async ({ workspace_id }) => {
+      await leaveWorkspace(railwayToken, workspace_id);
+      return { content: [{ type: 'text', text: `Left workspace ${workspace_id}` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PROJECT SCHEDULED DELETION
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('schedule_project_delete', 'Schedule a project for deletion (deferred deletion with a grace period).',
+    { project_id: z.string().describe('Railway project ID to schedule for deletion') },
+    async ({ project_id }) => {
+      await scheduleProjectDelete(railwayToken, project_id);
+      return { content: [{ type: 'text', text: `Project ${project_id} scheduled for deletion.` }] };
+    }
+  );
+
+  server.tool('cancel_project_delete', 'Cancel a previously scheduled project deletion.',
+    { project_id: z.string().describe('Railway project ID') },
+    async ({ project_id }) => {
+      await cancelScheduledProjectDelete(railwayToken, project_id);
+      return { content: [{ type: 'text', text: `Project ${project_id} deletion cancelled.` }] };
+    }
+  );
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PROJECT INVITATION (EXTENDED)
+  // ═══════════════════════════════════════════════════════════════════
+
+  server.tool('resend_project_invitation', 'Resend a pending project invitation email.',
+    { invitation_id: z.string().describe('Invitation ID to resend') },
+    async ({ invitation_id }) => {
+      const result = await resendProjectInvitation(railwayToken, invitation_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
   );
 
