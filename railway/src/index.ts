@@ -60,7 +60,7 @@ function createMcpServer(railwayToken: string): McpServer {
   // ═══════════════════════════════════════════════════════════════════
 
   server.tool('list_workspaces',
-    'Get your Railway account info and all workspaces. Always call this first — it returns workspace IDs needed for list_projects.',
+    'Get your Railway account info (name, email) and list of workspace/team IDs. Use this when you need a specific workspace ID. For most tasks you can skip this and call list_projects directly (workspace_id is optional there).',
     {},
     async () => {
       const me = await getMe(railwayToken);
@@ -72,8 +72,8 @@ function createMcpServer(railwayToken: string): McpServer {
   // PROJECTS
   // ═══════════════════════════════════════════════════════════════════
 
-  server.tool('list_projects', 'List all Railway projects in a workspace.',
-    { workspace_id: z.string().describe('Railway workspace ID') },
+  server.tool('list_projects', 'List Railway projects. workspace_id is OPTIONAL — omit it to list all your personal projects without needing to call list_workspaces first. Provide workspace_id only if you specifically need to filter to one workspace.',
+    { workspace_id: z.string().optional().describe('Railway workspace/team ID (optional — omit to list all accessible projects)') },
     async ({ workspace_id }) => {
       const projects = await listProjects(railwayToken, workspace_id);
       return { content: [{ type: 'text', text: JSON.stringify(projects, null, 2) }] };
@@ -88,11 +88,11 @@ function createMcpServer(railwayToken: string): McpServer {
     }
   );
 
-  server.tool('create_project', 'Create a new Railway project.',
+  server.tool('create_project', 'Create a new Railway project. team_id is OPTIONAL — omit it to create in your personal account. Only provide team_id if you specifically need the project in a team workspace.',
     {
       name: z.string().describe('Project name'),
       description: z.string().optional().describe('Project description'),
-      team_id: z.string().optional().describe('Team/workspace ID to create project in'),
+      team_id: z.string().optional().describe('Team/workspace ID (optional — omit for personal account)'),
     },
     async ({ name, description, team_id }) => {
       const project = await createProject(railwayToken, name, description, team_id);

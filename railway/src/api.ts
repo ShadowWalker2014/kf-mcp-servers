@@ -40,35 +40,66 @@ export async function getMe(token: string) {
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
-export async function listProjects(token: string, workspaceId: string) {
-  const data = await gql<{
-    workspace: {
-      projects: {
-        edges: {
-          node: {
-            id: string; name: string; description: string; createdAt: string; updatedAt: string;
-            services: { edges: { node: { id: string; name: string } }[] };
-            environments: { edges: { node: { id: string; name: string } }[] };
-          };
-        }[];
+// List projects — workspace_id is optional. When provided uses the workspace query (faster),
+// when omitted lists all personal projects using the top-level projects query.
+export async function listProjects(token: string, workspaceId?: string) {
+  if (workspaceId) {
+    const data = await gql<{
+      workspace: {
+        projects: {
+          edges: {
+            node: {
+              id: string; name: string; description: string; createdAt: string; updatedAt: string;
+              services: { edges: { node: { id: string; name: string } }[] };
+              environments: { edges: { node: { id: string; name: string } }[] };
+            };
+          }[];
+        };
       };
-    };
-  }>(token, `
-    query($workspaceId: String!) {
-      workspace(workspaceId: $workspaceId) {
-        projects {
-          edges {
-            node {
-              id name description createdAt updatedAt
-              services { edges { node { id name } } }
-              environments { edges { node { id name } } }
+    }>(token, `
+      query($workspaceId: String!) {
+        workspace(workspaceId: $workspaceId) {
+          projects {
+            edges {
+              node {
+                id name description createdAt updatedAt
+                services { edges { node { id name } } }
+                environments { edges { node { id name } } }
+              }
             }
           }
         }
       }
+    `, { workspaceId });
+    return data.workspace.projects.edges.map((e) => e.node);
+  }
+
+  // No workspace ID — list all projects accessible to this token
+  const data = await gql<{
+    projects: {
+      edges: {
+        node: {
+          id: string; name: string; description: string; createdAt: string; updatedAt: string;
+          teamId: string | null;
+          services: { edges: { node: { id: string; name: string } }[] };
+          environments: { edges: { node: { id: string; name: string } }[] };
+        };
+      }[];
+    };
+  }>(token, `
+    query {
+      projects {
+        edges {
+          node {
+            id name description createdAt updatedAt teamId
+            services { edges { node { id name } } }
+            environments { edges { node { id name } } }
+          }
+        }
+      }
     }
-  `, { workspaceId });
-  return data.workspace.projects.edges.map((e) => e.node);
+  `);
+  return data.projects.edges.map((e) => e.node);
 }
 
 export async function getProject(token: string, projectId: string) {
