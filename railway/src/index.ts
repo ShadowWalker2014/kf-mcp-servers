@@ -1446,10 +1446,10 @@ function createMcpServer(railwayToken: string): McpServer {
   server.tool('create_api_token', 'Create a new Railway API token.',
     {
       name: z.string().describe('Token name/label'),
-      team_id: z.string().optional().describe('Team ID to scope the token to (omit for account-scoped token)'),
+      workspace_id: z.string().optional().describe('Workspace ID to scope the token to (omit for account-scoped token). Use the ID from list_workspaces.'),
     },
-    async ({ name, team_id }) => {
-      const token = await createApiToken(railwayToken, name, team_id);
+    async ({ name, workspace_id }) => {
+      const token = await createApiToken(railwayToken, name, workspace_id);
       return { content: [{ type: 'text', text: `API token created: ${token}` }] };
     }
   );

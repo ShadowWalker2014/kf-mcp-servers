@@ -411,9 +411,11 @@ export async function renameEnvironment(token: string, id: string, name: string)
 }
 
 export async function triggerEnvironmentDeploys(token: string, environmentId: string, serviceIds?: string[]) {
+  const input: Record<string, unknown> = { environmentId };
+  if (serviceIds !== undefined) input.serviceIds = serviceIds;
   await gql(token, `
     mutation($input: EnvironmentTriggersDeployInput!) { environmentTriggersDeploy(input: $input) }
-  `, { input: { environmentId, serviceIds } });
+  `, { input });
 }
 
 // ─── Deployments ─────────────────────────────────────────────────────────────
@@ -489,14 +491,17 @@ export async function getBuildLogs(token: string, deploymentId: string, limit?: 
   return data.buildLogs;
 }
 
-export async function getEnvironmentLogs(token: string, environmentId: string, filter?: string, beforeLimit?: number) {
+export async function getEnvironmentLogs(token: string, environmentId: string, filter?: string, limit?: number) {
+  const vars: Record<string, unknown> = { environmentId };
+  if (filter) vars.filter = filter;
+  if (limit !== undefined) vars.beforeLimit = limit;
   const data = await gql<{
     environmentLogs: { timestamp: string; message: string; severity: string }[];
   }>(token, `
     query($environmentId: String!, $filter: String, $beforeLimit: Int) {
       environmentLogs(environmentId: $environmentId, filter: $filter, beforeLimit: $beforeLimit) { timestamp message severity }
     }
-  `, { environmentId, filter, beforeLimit });
+  `, vars);
   return data.environmentLogs;
 }
 
@@ -1150,9 +1155,11 @@ export async function updateWebhook(token: string, id: string, input: { url?: st
 // ─── Usage Limits ────────────────────────────────────────────────────────────
 
 export async function setUsageLimit(token: string, projectId: string, hardLimitDollars: number, notificationDollars?: number) {
+  const input: Record<string, unknown> = { projectId, hardLimitDollars };
+  if (notificationDollars !== undefined) input.notificationDollars = notificationDollars;
   await gql(token, `
     mutation($input: UsageLimitSetInput!) { usageLimitSet(input: $input) }
-  `, { input: { projectId, hardLimitDollars, notificationDollars } });
+  `, { input });
 }
 
 export async function removeUsageLimit(token: string, projectId: string) {
@@ -1200,11 +1207,15 @@ export async function clearEgressGateways(token: string, environmentId: string, 
 // ─── Templates ───────────────────────────────────────────────────────────────
 
 export async function deployTemplate(token: string, templateCode: string, projectId?: string, environmentId?: string, services?: Record<string, unknown>) {
+  const input: Record<string, unknown> = { templateCode };
+  if (projectId) input.projectId = projectId;
+  if (environmentId) input.environmentId = environmentId;
+  if (services) input.services = services;
   const data = await gql<{ templateDeployV2: { projectId: string; workflowId: string } }>(token, `
     mutation($input: TemplateDeployV2Input!) {
       templateDeployV2(input: $input) { projectId workflowId }
     }
-  `, { input: { templateCode, projectId, environmentId, services } });
+  `, { input });
   return data.templateDeployV2;
 }
 
@@ -1234,24 +1245,25 @@ export async function getMetrics(
     sampleRateSeconds?: number;
   }
 ) {
+  const vars: Record<string, unknown> = {
+    startDate, measurements,
+    groupBy: options?.groupBy ?? [],
+  };
+  if (options?.endDate) vars.endDate = options.endDate;
+  if (options?.environmentId) vars.environmentId = options.environmentId;
+  if (options?.serviceId) vars.serviceId = options.serviceId;
+  if (options?.projectId) vars.projectId = options.projectId;
+  if (options?.sampleRateSeconds) vars.sampleRateSeconds = options.sampleRateSeconds;
+
   const data = await gql<{
-    metrics: { measurement: string; values: { timestamp: string; value: number }[] }[];
+    metrics: { measurement: string }[];
   }>(token, `
     query($startDate: DateTime!, $measurements: [MetricMeasurement!]!, $endDate: DateTime, $environmentId: String, $serviceId: String, $projectId: String, $groupBy: [MetricTag]!, $sampleRateSeconds: Int) {
       metrics(startDate: $startDate, measurements: $measurements, endDate: $endDate, environmentId: $environmentId, serviceId: $serviceId, projectId: $projectId, groupBy: $groupBy, sampleRateSeconds: $sampleRateSeconds) {
         measurement
-        values { timestamp value }
       }
     }
-  `, {
-    startDate, measurements,
-    endDate: options?.endDate,
-    environmentId: options?.environmentId,
-    serviceId: options?.serviceId,
-    projectId: options?.projectId,
-    groupBy: options?.groupBy ?? [],
-    sampleRateSeconds: options?.sampleRateSeconds,
-  });
+  `, vars);
   return data.metrics;
 }
 
@@ -1266,6 +1278,15 @@ export async function getUsage(
     groupBy?: string[];
   }
 ) {
+  const vars: Record<string, unknown> = {
+    measurements,
+    groupBy: options?.groupBy ?? [],
+  };
+  if (options?.startDate) vars.startDate = options.startDate;
+  if (options?.endDate) vars.endDate = options.endDate;
+  if (options?.projectId) vars.projectId = options.projectId;
+  if (options?.teamId) vars.teamId = options.teamId;
+
   const data = await gql<{
     usage: { measurement: string; value: number }[];
   }>(token, `
@@ -1274,18 +1295,14 @@ export async function getUsage(
         measurement value
       }
     }
-  `, {
-    measurements,
-    startDate: options?.startDate,
-    endDate: options?.endDate,
-    projectId: options?.projectId,
-    teamId: options?.teamId,
-    groupBy: options?.groupBy ?? [],
-  });
+  `, vars);
   return data.usage;
 }
 
 export async function getEstimatedUsage(token: string, measurements: string[], projectId?: string, teamId?: string) {
+  const vars: Record<string, unknown> = { measurements };
+  if (projectId) vars.projectId = projectId;
+  if (teamId) vars.teamId = teamId;
   const data = await gql<{
     estimatedUsage: { measurement: string; estimatedValue: number; projectId: string }[];
   }>(token, `
@@ -1294,7 +1311,7 @@ export async function getEstimatedUsage(token: string, measurements: string[], p
         measurement estimatedValue projectId
       }
     }
-  `, { measurements, projectId, teamId });
+  `, vars);
   return data.estimatedUsage;
 }
 
@@ -1318,8 +1335,15 @@ export async function getServiceInstanceLimits(token: string, projectId: string,
 
 export async function updateServiceInstanceLimits(
   token: string,
-  input: { projectId: string; environmentId: string; serviceId: string; cpuLimit?: number; memoryLimitMB?: number; cpuRequest?: number; memoryRequestMB?: number }
+  { projectId, environmentId, serviceId, cpuLimit, memoryLimitMB, cpuRequest, memoryRequestMB }:
+  { projectId: string; environmentId: string; serviceId: string; cpuLimit?: number; memoryLimitMB?: number; cpuRequest?: number; memoryRequestMB?: number }
 ) {
+  // Build input defensively — only include fields that are explicitly set
+  const input: Record<string, unknown> = { projectId, environmentId, serviceId };
+  if (cpuLimit !== undefined) input.cpuLimit = cpuLimit;
+  if (memoryLimitMB !== undefined) input.memoryLimitMB = memoryLimitMB;
+  if (cpuRequest !== undefined) input.cpuRequest = cpuRequest;
+  if (memoryRequestMB !== undefined) input.memoryRequestMB = memoryRequestMB;
   await gql(token, `
     mutation($input: ServiceInstanceLimitsUpdateInput!) { serviceInstanceLimitsUpdate(input: $input) }
   `, { input });
@@ -1373,10 +1397,13 @@ export async function getDeploymentSnapshot(token: string, deploymentId: string)
 
 // ─── API Tokens ──────────────────────────────────────────────────────────────
 
-export async function createApiToken(token: string, name: string, teamId?: string) {
+export async function createApiToken(token: string, name: string, workspaceId?: string) {
+  // Only include workspaceId when explicitly provided (same pattern as createProject)
+  const input: Record<string, unknown> = { name };
+  if (workspaceId) input.workspaceId = workspaceId;
   const data = await gql<{ apiTokenCreate: string }>(token, `
     mutation($input: ApiTokenCreateInput!) { apiTokenCreate(input: $input) }
-  `, { input: { name, teamId } });
+  `, { input });
   return data.apiTokenCreate;
 }
 
