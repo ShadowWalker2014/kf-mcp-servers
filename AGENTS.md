@@ -48,7 +48,7 @@ kf-mcp-servers/
 - **Railway Token**: `X-Railway-Token` header per request (or `RAILWAY_TOKEN` env fallback)
 - **Endpoint**: `POST /mcp`
 - **Health**: `GET /health`
-- **Tools**: `check_status`, `list_projects`, `list_services`, `list_environments`, `list_deployments`, `get_logs` (build|deploy), `list_variables`, `set_variable`, `redeploy`, `restart_deployment`, `create_environment`, `generate_domain`
+- **Tools (60 total)**: Full Railway CLI feature parity — projects (CRUD, members, tokens, invitations), services (CRUD, connect/disconnect, duplicate, deploy, instance config), environments (CRUD, rename, trigger deploys), deployments (list, get, logs, redeploy, restart, cancel, stop, rollback, remove, approve, triggers CRUD), variables (list, set, bulk set, delete), domains (list, generate, add/delete custom, domain status), TCP proxies (CRUD), volumes (CRUD, backups), plugins (create/delete/restart), GitHub (repos, branches), regions, webhooks (CRUD), private networks (CRUD)
 - **Implementation**: Direct Railway GraphQL API (`https://backboard.railway.com/graphql/v2`) — no CLI needed
 - **Env vars**: `MCP_API_KEY`, `RAILWAY_TOKEN` (optional fallback), `PORT`
 - **Railway**: Root dir = `railway/`
