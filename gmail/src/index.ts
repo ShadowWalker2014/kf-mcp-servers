@@ -19,10 +19,8 @@ function getBaseUrl(): string {
 function createMcpServer(userId: string | null): McpServer {
   const server = new McpServer({ name: 'gmail-mcp', version: '1.0.0' })
   registerIdentityTools(server, userId, getBaseUrl)
-  if (userId) {
-    registerInboxTools(server, userId)
-    registerComposeTools(server, userId)
-  }
+  registerInboxTools(server, userId)
+  registerComposeTools(server, userId)
   return server
 }
 

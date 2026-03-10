@@ -73,7 +73,11 @@ function parseMessage(msg: gmail_v1.Schema$Message) {
   }
 }
 
-export function registerInboxTools(server: McpServer, userId: string) {
+export function registerInboxTools(server: McpServer, userId: string | null) {
+  const requireAuth = () => {
+    if (!userId) return { content: [{ type: 'text' as const, text: 'Not authenticated. Call link-identity first to get an API key, then add it as X-API-Key header.' }] }
+    return null
+  }
   server.tool(
     'list-emails',
     'List recent emails from inbox or a specific label.',
@@ -84,7 +88,8 @@ export function registerInboxTools(server: McpServer, userId: string) {
       next_page: z.string().optional().describe('Page token for next page of results'),
     },
     async ({ account_name = 'default', max = 20, label = 'INBOX', next_page }) => {
-      const gmail = await getGmailClient(userId, account_name)
+      const err = requireAuth(); if (err) return err
+      const gmail = await getGmailClient(userId!, account_name)
       const listRes = await gmail.users.messages.list({
         userId: 'me',
         maxResults: max,
@@ -123,7 +128,8 @@ export function registerInboxTools(server: McpServer, userId: string) {
       next_page: z.string().optional().describe('Page token for next page'),
     },
     async ({ query, account_name = 'default', max = 20, next_page }) => {
-      const gmail = await getGmailClient(userId, account_name)
+      const err = requireAuth(); if (err) return err
+      const gmail = await getGmailClient(userId!, account_name)
       const listRes = await gmail.users.messages.list({ userId: 'me', q: query, maxResults: max, pageToken: next_page })
       const messages = listRes.data.messages ?? []
       const results = await Promise.all(messages.map(async (m) => {
@@ -156,7 +162,8 @@ export function registerInboxTools(server: McpServer, userId: string) {
       thread: z.boolean().optional().describe('If true, read the full thread (default: false)'),
     },
     async ({ id, account_name = 'default', thread = false }) => {
-      const gmail = await getGmailClient(userId, account_name)
+      const err = requireAuth(); if (err) return err
+      const gmail = await getGmailClient(userId!, account_name)
 
       if (thread) {
         const msg = await gmail.users.messages.get({ userId: 'me', id, format: 'full' })

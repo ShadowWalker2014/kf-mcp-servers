@@ -78,7 +78,11 @@ const attachmentSchema = z.array(z.object({
   mime_type: z.string().describe('MIME type (e.g. "application/pdf")'),
 })).optional()
 
-export function registerComposeTools(server: McpServer, userId: string) {
+export function registerComposeTools(server: McpServer, userId: string | null) {
+  const requireAuth = () => {
+    if (!userId) return { content: [{ type: 'text' as const, text: 'Not authenticated. Call link-identity first to get an API key, then add it as X-API-Key header.' }] }
+    return null
+  }
   server.tool(
     'send-email',
     'Send an email.',
@@ -93,7 +97,8 @@ export function registerComposeTools(server: McpServer, userId: string) {
       attachments: attachmentSchema,
     },
     async ({ to, subject, body, account_name = 'default', html, cc, bcc, attachments }) => {
-      const gmail = await getGmailClient(userId, account_name)
+      const err = requireAuth(); if (err) return err
+      const gmail = await getGmailClient(userId!, account_name)
       const raw = buildMime({ to, subject, body, html, cc, bcc, attachments })
       const res = await gmail.users.messages.send({ userId: 'me', requestBody: { raw } })
       return { content: [{ type: 'text', text: JSON.stringify({ message_id: res.data.id }) }] }
@@ -113,7 +118,8 @@ export function registerComposeTools(server: McpServer, userId: string) {
       attachments: attachmentSchema,
     },
     async ({ message_id, body, account_name = 'default', html, cc, bcc, attachments }) => {
-      const gmail = await getGmailClient(userId, account_name)
+      const err = requireAuth(); if (err) return err
+      const gmail = await getGmailClient(userId!, account_name)
       const orig = await gmail.users.messages.get({
         userId: 'me',
         id: message_id,
@@ -152,7 +158,8 @@ export function registerComposeTools(server: McpServer, userId: string) {
       account_name: z.string().optional().describe('Gmail account name (default: "default")'),
     },
     async ({ message_id, action, add_labels = [], remove_labels = [], account_name = 'default' }) => {
-      const gmail = await getGmailClient(userId, account_name)
+      const err = requireAuth(); if (err) return err
+      const gmail = await getGmailClient(userId!, account_name)
       const addLabelIds = [...add_labels]
       const removeLabelIds = [...remove_labels]
 
@@ -188,7 +195,8 @@ export function registerComposeTools(server: McpServer, userId: string) {
       reply_to_message_id: z.string().optional().describe('Message ID to reply to (for creating a draft reply)'),
     },
     async ({ action, account_name = 'default', draft_id, to, subject, body, html, cc, bcc, reply_to_message_id }) => {
-      const gmail = await getGmailClient(userId, account_name)
+      const err = requireAuth(); if (err) return err
+      const gmail = await getGmailClient(userId!, account_name)
 
       if (action === 'create') {
         let raw: string

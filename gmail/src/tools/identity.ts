@@ -36,15 +36,19 @@ export function registerIdentityTools(server: McpServer, userId: string | null, 
     }
   )
 
-  if (!userId) return
+  const requireAuth = () => {
+    if (!userId) return { content: [{ type: 'text' as const, text: 'Not authenticated. Call link-identity first to get an API key, then add it as X-API-Key header.' }] }
+    return null
+  }
 
   server.tool(
     'link-account',
     'Link an additional Gmail account to your identity. Returns a URL to open in your browser.',
     { account_name: z.string().describe('Name for this Gmail account (e.g. "work", "personal")') },
     async ({ account_name }) => {
+      const err = requireAuth(); if (err) return err
       const auth = getOAuth2Client(`${getBaseUrl()}/oauth/callback`)
-      const state = await saveOAuthState(userId, account_name, 'account')
+      const state = await saveOAuthState(userId!, account_name, 'account')
       const auth_url = auth.generateAuthUrl({
         access_type: 'offline',
         scope: ACCOUNT_SCOPES,
@@ -60,7 +64,8 @@ export function registerIdentityTools(server: McpServer, userId: string | null, 
     'List all linked Gmail accounts.',
     {},
     async () => {
-      const accounts = await listGmailAccounts(userId)
+      const err = requireAuth(); if (err) return err
+      const accounts = await listGmailAccounts(userId!)
       return { content: [{ type: 'text', text: JSON.stringify(accounts) }] }
     }
   )
@@ -70,7 +75,8 @@ export function registerIdentityTools(server: McpServer, userId: string | null, 
     'Remove a linked Gmail account.',
     { account_name: z.string().describe('Account name to unlink') },
     async ({ account_name }) => {
-      await deleteGmailAccount(userId, account_name)
+      const err = requireAuth(); if (err) return err
+      await deleteGmailAccount(userId!, account_name)
       return { content: [{ type: 'text', text: JSON.stringify({ success: true, message: `Account '${account_name}' unlinked` }) }] }
     }
   )
@@ -80,7 +86,8 @@ export function registerIdentityTools(server: McpServer, userId: string | null, 
     'Issue a new API key for your account. Save it — it will not be shown again.',
     { name: z.string().optional().describe('Label for this key') },
     async ({ name }) => {
-      const key = await createApiKey(userId, name)
+      const err = requireAuth(); if (err) return err
+      const key = await createApiKey(userId!, name)
       return { content: [{ type: 'text', text: JSON.stringify({ api_key: key, message: 'Save this key — it will not be shown again' }) }] }
     }
   )
@@ -90,7 +97,8 @@ export function registerIdentityTools(server: McpServer, userId: string | null, 
     'Revoke an API key by its prefix.',
     { key_prefix: z.string().describe('Key prefix (first 12 chars) to revoke') },
     async ({ key_prefix }) => {
-      await deleteApiKey(userId, key_prefix)
+      const err = requireAuth(); if (err) return err
+      await deleteApiKey(userId!, key_prefix)
       return { content: [{ type: 'text', text: JSON.stringify({ success: true }) }] }
     }
   )
@@ -100,7 +108,8 @@ export function registerIdentityTools(server: McpServer, userId: string | null, 
     'List all your API keys (prefixes only, not full keys).',
     {},
     async () => {
-      const keys = await listApiKeys(userId)
+      const err = requireAuth(); if (err) return err
+      const keys = await listApiKeys(userId!)
       return { content: [{ type: 'text', text: JSON.stringify(keys) }] }
     }
   )
