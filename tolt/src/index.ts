@@ -368,7 +368,13 @@ function resolveProgramId(req: Request): string | undefined {
 const app = express();
 app.use(express.json());
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', server: 'tolt-mcp', version: '1.0.0' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', server: 'tolt-mcp', version: '1.0.1' }));
+
+app.get('/debug', authenticate, (req, res) => res.json({
+  program_id: resolveProgramId(req),
+  api_key_set: !!resolveApiKey(req),
+  headers: Object.keys(req.headers),
+}));
 
 app.post('/mcp', authenticate, async (req: Request, res: Response) => {
   const apiKey = resolveApiKey(req);
