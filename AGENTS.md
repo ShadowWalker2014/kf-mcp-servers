@@ -112,12 +112,37 @@ Each server deploys as its own Railway service. **Use nixpacks (no Dockerfile)**
 - **Railway**: Root dir = `tolt/`, nixpacks, branch=main, watch_patterns=`tolt/**`
 
 ## Adding a New MCP Server
-1. Create `<name>/src/` folder with `src/index.ts`, `src/api.ts`, `package.json`, `tsconfig.json`, `railway.json`, `.gitignore`
-2. **No Dockerfile** — use nixpacks. `railway.json` = `{"build":{"builder":"NIXPACKS"},"deploy":{"healthcheckPath":"/health","startCommand":"node dist/index.js"}}`
-3. Use Express + `@modelcontextprotocol/sdk` StreamableHTTPServerTransport (stateless)
-4. Always expose `GET /health` and `POST /mcp`
-5. Add auth via `MCP_API_KEY` env var
-6. `npm install && npm run build` — confirm clean
-7. **Do NOT** `git add -f` — never commit `dist/`, only commit `src/`, config files, `package-lock.json`
-8. Deploy via Railway MCP (see deployment pattern above)
-9. Update this AGENTS.md with server details + Railway service ID
+
+**Build**: Follow `.cursor/skills/build-http-mcp/SKILL.md` for the full template (Express + StreamableHTTP, tools/prompts/resources, OAuth).
+
+**railway.json** (required per-server, no Dockerfile):
+```json
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": { "builder": "NIXPACKS" },
+  "deploy": { "healthcheckPath": "/health", "healthcheckTimeout": 30, "startCommand": "node dist/index.js" }
+}
+```
+
+**Credential header convention** (header → env var fallback):
+
+| Server | Header | Env var |
+|--------|--------|---------|
+| postgres | `X-Database-URL` | `DATABASE_URL` |
+| railway | `X-Railway-Token` | `RAILWAY_TOKEN` |
+| stripe | `X-Stripe-Api-Key` | `STRIPE_SECRET_KEY` |
+| datafast | `X-Datafast-Api-Key` | `DATAFAST_API_KEY` |
+| tolt | `X-Tolt-Api-Key` | `TOLT_API_KEY` |
+
+**Deploy checklist** (Railway MCP — PROJECT_ID=`270a435c-b967-4ee2-abdd-de75ad0fba1a`, ENV_ID=`3f075578-f96b-4400-8936-baf77e21745d`):
+1. `npm install && npm run build` — clean compile
+2. `git add <name>/` (never `git add -f`, never commit `dist/`) → `git commit && git push`
+3. `create_service` → `connect_service` (repo=`ShadowWalker2014/kf-mcp-servers`, branch=main)
+4. `update_service_instance` → `root_directory="<name>"`, `build_command="npm run build"`, `start_command="node dist/index.js"`, `healthcheck_path="/health"`, `watch_patterns=["<name>/**"]`
+5. `set_variables_bulk` → `MCP_API_KEY`, `PORT`, credential env vars
+6. `create_deployment_trigger` → provider=GITHUB, repo, branch=main ← **CRITICAL: without this, pushes never build**
+7. `generate_domain` → get public URL
+8. `git push` → Railway builds automatically
+9. `curl https://domain/health` → confirm `{"status":"ok"}`
+10. Update this AGENTS.md with server details + Railway service ID
+11. Add to `~/.cursor/mcp.json`

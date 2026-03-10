@@ -1,32 +1,27 @@
 ---
 name: build-http-mcp
-description: Build and deploy HTTP MCP servers to the kf-mcp-servers monorepo on Railway. Each server uses Express + MCP Streamable HTTP transport, accepts credentials per-request via headers, and deploys as an independent Railway service from a subfolder. Use when asked to build a new MCP server, add tools to an existing MCP, or deploy an MCP to Railway.
+description: Build HTTP MCP servers using Express + @modelcontextprotocol/sdk Streamable HTTP transport. Covers tools, prompts, resources, auth, and OAuth patterns. Use when asked to build a new MCP server, add capabilities to an existing one, or wrap any API as MCP tools/resources/prompts.
 ---
 
 # Build HTTP MCP Servers
 
-All MCP servers live in `/Users/kaifeng/Developer/kf-mcp-servers/` — a monorepo where each subfolder is an independent Railway service.
+HTTP MCP servers wrap any API into AI-usable tools, prompts, and resources over HTTP. Architecture: **Express → auth middleware → fresh `McpServer` per request → `StreamableHTTPServerTransport`**.
 
-## Monorepo structure
+## File structure
 
 ```
-kf-mcp-servers/
-├── AGENTS.md          ← central memory, update when adding servers
-├── blink-cms/         ← Blink CMS + web tools (port 3100)
-├── postgres/          ← PostgreSQL query tool (port 3200)
-├── stripe/            ← Stripe billing (port 3300)
-├── railway/           ← Railway infra management (port 3400)
-├── datafast/          ← DataFast analytics (port 3500)
-└── digits/            ← Digits financial data / OAuth (port 3600)
+my-server/
+├── src/
+│   ├── index.ts   # Express app + MCP server factory
+│   └── api.ts     # Pure API client functions (no MCP imports)
+├── package.json
+├── tsconfig.json
+└── .gitignore
 ```
 
-## Standard server template
+`api.ts` = pure functions that call the upstream API — no Express, no MCP. `index.ts` wires them together.
 
-Every server needs: `src/index.ts`, `src/api.ts`, `package.json`, `tsconfig.json`, `railway.json`, `.gitignore`
-
-**No Dockerfile.** Railway's nixpacks auto-detects Node.js — simpler, faster, no layer-cache issues.
-
-### `src/index.ts` skeleton
+## `src/index.ts`
 
 ```typescript
 import express, { NextFunction, Request, Response } from 'express';
@@ -35,23 +30,23 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 
 const MCP_API_KEY = process.env.MCP_API_KEY;
-const PORT = parseInt(process.env.PORT || '3XXX');
-if (isNaN(PORT)) throw new Error(`Invalid PORT: "${process.env.PORT}"`);
+const PORT = parseInt(process.env.PORT || '3000');
 
 function createMcpServer(credential: string): McpServer {
-  const server = new McpServer({ name: 'my-mcp', version: '1.0.0' });
+  const server = new McpServer({ name: 'my-server', version: '1.0.0' });
 
-  server.tool('tool_name', 'Description of what the tool does.', 
-    { param: z.string().describe('...') },
+  server.tool(
+    'tool_name',
+    'What this tool does and when to use it.',
+    { param: z.string().describe('What this parameter is') },
     async ({ param }) => ({
-      content: [{ type: 'text', text: JSON.stringify(await callApi(credential, param), null, 2) }]
+      content: [{ type: 'text', text: JSON.stringify(await callApi(credential, param), null, 2) }],
     })
   );
 
   return server;
 }
 
-// Auth: MCP_API_KEY gates access to the server itself
 function authenticate(req: Request, res: Response, next: NextFunction) {
   if (!MCP_API_KEY) return next();
   const key = req.headers.authorization?.startsWith('Bearer ')
@@ -62,24 +57,22 @@ function authenticate(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-// Credential resolution: header takes priority over env var
 function resolveCredential(req: Request): string | null {
-  return (req.headers['x-my-credential'] as string | undefined)
-    ?? process.env.MY_CREDENTIAL ?? null;
+  return (req.headers['x-my-credential'] as string | undefined) ?? process.env.MY_CREDENTIAL ?? null;
 }
 
 const app = express();
 app.use(express.json());
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', server: 'my-mcp', version: '1.0.0' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', server: 'my-server', version: '1.0.0' }));
 
-// Stateless: new McpServer + transport per request (no session management needed)
+// Stateless: fresh McpServer + transport per request
 app.post('/mcp', authenticate, async (req: Request, res: Response) => {
   const credential = resolveCredential(req);
   if (!credential) { res.status(400).json({ error: 'No credential provided.' }); return; }
 
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,   // stateless
+    sessionIdGenerator: undefined, // stateless
     enableJsonResponse: true,
   });
 
@@ -92,21 +85,18 @@ app.post('/mcp', authenticate, async (req: Request, res: Response) => {
 app.get('/mcp', authenticate, (_req, res) => res.status(405).json({ error: 'Use POST /mcp' }));
 app.delete('/mcp', authenticate, (_req, res) => res.status(405).json({ error: 'Stateless mode' }));
 
-app.listen(PORT, () => console.log(`my-mcp running on http://0.0.0.0:${PORT}`));
+app.listen(PORT, () => console.log(`my-server running on http://0.0.0.0:${PORT}`));
 ```
 
-### `package.json`
+## Config files
 
+**`package.json`**
 ```json
 {
-  "name": "my-mcp",
+  "name": "my-server",
   "version": "1.0.0",
   "type": "module",
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js"
-  },
+  "scripts": { "build": "tsc", "dev": "tsx watch src/index.ts", "start": "node dist/index.js" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.1",
     "express": "^5.0.0",
@@ -122,8 +112,7 @@ app.listen(PORT, () => console.log(`my-mcp running on http://0.0.0.0:${PORT}`));
 }
 ```
 
-### `tsconfig.json`
-
+**`tsconfig.json`**
 ```json
 {
   "compilerOptions": {
@@ -137,18 +126,7 @@ app.listen(PORT, () => console.log(`my-mcp running on http://0.0.0.0:${PORT}`));
 }
 ```
 
-### `railway.json`
-
-```json
-{
-  "$schema": "https://railway.com/railway.schema.json",
-  "build": { "builder": "NIXPACKS" },
-  "deploy": { "healthcheckPath": "/health", "healthcheckTimeout": 30, "startCommand": "node dist/index.js" }
-}
-```
-
-### `.gitignore`
-
+**`.gitignore`**
 ```
 node_modules/
 dist/
@@ -158,188 +136,62 @@ dist/
 .DS_Store
 ```
 
-## Adding Prompts
-
-Prompts are reusable message templates clients can discover (`prompts/list`) and invoke (`prompts/get`). Use them for common instructions, system prompts, or guided workflows.
-
-```typescript
-import { z } from 'zod';
-
-function createMcpServer(credential: string): McpServer {
-  const server = new McpServer({ name: 'my-mcp', version: '1.0.0' });
-
-  // Register a prompt with typed args (Zod schema)
-  server.registerPrompt(
-    'summarize',
-    {
-      title: 'Summarize Text',
-      description: 'Ask the LLM to summarize provided text',
-      argsSchema: {
-        text: z.string().describe('The text to summarize'),
-        style: z.enum(['bullet', 'paragraph']).describe('Output format').optional(),
-      },
-    },
-    ({ text, style = 'paragraph' }) => ({
-      messages: [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text: `Please summarize the following in ${style} form:\n\n${text}`,
-          },
-        },
-      ],
-    })
-  );
-
-  return server;
-}
-```
-
-- `argsSchema` uses plain Zod objects (not `z.object()`).
-- Handler returns `{ messages: [...] }` — the MCP client injects these into the LLM context.
-- Capability is **auto-advertised** as `{ prompts: { listChanged: true } }` once you call `registerPrompt`.
-
-## Adding Resources (documentation / read-only data)
-
-Resources let the server expose structured data by URI. Clients call `resources/list` to discover, `resources/read` to fetch. Use for API docs, schemas, config, or any reference data.
-
-```typescript
-import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
-
-function createMcpServer(credential: string): McpServer {
-  const server = new McpServer({ name: 'my-mcp', version: '1.0.0' });
-
-  // Static resource — fixed URI
-  server.registerResource(
-    'api-overview',
-    'docs://api/overview',
-    {
-      title: 'API Overview',
-      description: 'High-level description of available endpoints',
-      mimeType: 'text/markdown',
-    },
-    async (uri) => ({
-      contents: [{ uri: uri.href, text: '# My API\nEndpoints: ...' }],
-    })
-  );
-
-  // Dynamic resource — URI template with parameters
-  server.registerResource(
-    'table-schema',
-    new ResourceTemplate('db://tables/{tableName}/schema', { list: undefined }),
-    { title: 'Table Schema', mimeType: 'application/json' },
-    async (uri, { tableName }) => {
-      const schema = await getTableSchema(credential, tableName as string);
-      return { contents: [{ uri: uri.href, text: JSON.stringify(schema, null, 2) }] };
-    }
-  );
-
-  return server;
-}
-```
-
-- Capability is **auto-advertised** as `{ resources: { listChanged: true, subscribe: true } }` once you call `registerResource`.
-- For binary content use `blob: base64string` instead of `text`.
-- `ResourceTemplate` URI variables (`{tableName}`) are passed as the second argument to the handler.
-
 ## Key design rules
 
-- **Stateless** — `sessionIdGenerator: undefined` + `enableJsonResponse: true`. No session maps.
-- **Credentials per request** — header takes priority over env var. One deployed server handles multiple accounts (e.g., postgres server handles any DB via `X-Database-URL`).
-- **Express 5** — async errors propagate automatically; no try/catch needed in route handlers.
-- **`MCP_API_KEY`** — always gates the MCP server itself. Set to `blnk_68f3c7384ce7f296ff1f3c4d88fcfbf4`.
-- **Bind to `0.0.0.0`** — Railway requires this (implicit in `app.listen(PORT)`).
-- **`npm ci` not `npm install`** — deterministic builds; commit `package-lock.json`.
+- **Stateless** — `sessionIdGenerator: undefined` + `enableJsonResponse: true`. Never store session state; create a fresh `McpServer` per request.
+- **Credentials per request** — resolve from header first, fall back to env var. One deployed server can serve multiple accounts.
+- **Express 5** — async errors propagate automatically; no try/catch in route handlers.
+- **Bind to `0.0.0.0`** — required by most hosting platforms (implicit in `app.listen(PORT)`).
+- **Never commit `dist/`** — hosting platforms skip compilation if compiled output is in git.
+- **`MCP_API_KEY`** — always gate the server with this env var. Accept via `Authorization: Bearer` or `x-api-key` header.
 
-## Header naming convention
+## Tools
 
-| Server | Credential header |
-|--------|------------------|
-| postgres | `X-Database-URL` |
-| railway | `X-Railway-Token` |
-| stripe | `X-Stripe-Api-Key` |
-| datafast | `X-Datafast-Api-Key` |
-| digits | `X-Digits-Refresh-Token` |
+Each tool should:
+- Have a clear action-oriented name (`query_database` not `db`)
+- Have a description that explains *when* to use it, not just what it does
+- Use Zod for every input field with `.describe()` on each
+- Return `{ content: [{ type: 'text', text: ... }] }` — stringify objects with `JSON.stringify(result, null, 2)`
 
-## OAuth servers (e.g. Digits)
+Capabilities are **auto-advertised**: calling `server.tool()` automatically enables `{ tools: { listChanged: true } }` in the MCP handshake.
 
-When the API uses OAuth, add two extra Express routes before `/mcp`:
+See [examples.md](examples.md) for complete working tool implementations.
 
-```typescript
-// Redirect user to provider auth page
-app.get('/auth/start', (_req, res) => {
-  const url = new URL(AUTHORIZE_URL);
-  url.searchParams.set('client_id', CLIENT_ID);
-  url.searchParams.set('redirect_uri', `${BASE_URL}/auth/callback`);
-  url.searchParams.set('scope', 'required:scopes');
-  res.redirect(url.toString());
-});
+## Prompts
 
-// Exchange code for tokens, display refresh_token to user
-app.get('/auth/callback', async (req, res) => {
-  const tokens = await exchangeCode(CLIENT_ID, CLIENT_SECRET, req.query.code, REDIRECT_URI);
-  res.send(`<pre>Refresh token: ${tokens.refresh_token}</pre>`);
-});
-```
+Prompts are reusable message templates clients discover via `prompts/list` and invoke via `prompts/get`. Register with `server.registerPrompt()` — capability is auto-advertised.
 
-Store `CLIENT_ID`, `CLIENT_SECRET` as Railway env vars. `BASE_URL` = the Railway public domain.
-Token auto-refresh: cache access tokens by refresh_token key, re-fetch when within 60s of expiry.
+See [prompts-resources.md](prompts-resources.md) for full API and patterns.
 
-## Deploy to Railway (via Railway MCP)
+## Resources
 
-Use the `user-railway` MCP tools in sequence. PROJECT_ID=`270a435c-b967-4ee2-abdd-de75ad0fba1a`, ENV_ID=`3f075578-f96b-4400-8936-baf77e21745d`.
+Resources expose read-only data by URI (docs, schemas, config). Clients discover via `resources/list` and fetch via `resources/read`. Register with `server.registerResource()` or `ResourceTemplate` for parameterized URIs — capability is auto-advertised.
 
-```
-1. create_service        → project_id, name="my-mcp", environment_id
-2. connect_service       → project_id, service_id, repo="ShadowWalker2014/kf-mcp-servers", branch="main"
-3. update_service_instance → service_id, environment_id,
-                             root_directory="my-mcp",
-                             build_command="npm run build",
-                             start_command="node dist/index.js",
-                             healthcheck_path="/health",
-                             watch_patterns=["my-mcp/**"]
-4. set_variables_bulk    → MCP_API_KEY, PORT, any credential env vars
-5. create_deployment_trigger → provider="GITHUB", repo, branch="main"  ← REQUIRED for auto-deploy on push
-6. generate_domain       → get public URL
-7. git push              → Railway builds automatically via trigger
-8. poll GET /health      → wait for {"status":"ok"}
-```
+See [prompts-resources.md](prompts-resources.md) for full API and patterns.
 
-**Critical lessons (do not skip):**
-- `create_deployment_trigger` is MANDATORY — without it, git pushes never trigger builds
-- `serviceInstanceRedeploy`/`serviceInstanceDeploy` only restarts existing image — NOT a fresh build
-- **Never commit `dist/`** — nixpacks will skip compilation and run stale code. Ensure `.gitignore` has `dist/` and never use `git add -f`
-- The only way to trigger a real rebuild is a `git push` after the deployment trigger is wired
+## OAuth
 
-## Verify and connect
+When the upstream API uses OAuth (authorization code flow), add `/auth/start` and `/auth/callback` routes before `/mcp`. See [oauth.md](oauth.md) for the full pattern including token refresh caching.
 
-```bash
-# Check health
-curl https://my-mcp.up.railway.app/health
+## Connecting to Cursor
 
-# Add to ~/.cursor/mcp.json
+Add to `~/.cursor/mcp.json`:
+```json
 {
-  "my-mcp": {
-    "url": "https://my-mcp.up.railway.app/mcp",
+  "my-server": {
+    "url": "https://your-server.example.com/mcp",
     "headers": {
-      "Authorization": "Bearer blnk_68f3c7384ce7f296ff1f3c4d88fcfbf4",
+      "Authorization": "Bearer <MCP_API_KEY>",
       "X-My-Credential": "<credential>"
     }
   }
 }
 ```
 
-## Checklist for new server
+## Build checklist
 
-- [ ] `mkdir -p kf-mcp-servers/my-mcp/src`
-- [ ] Write `src/api.ts` (pure API client functions)
-- [ ] Write `src/index.ts` (Express + MCP tools)
-- [ ] Write `package.json`, `tsconfig.json`, `railway.json`, `.gitignore` — **NO Dockerfile**
-- [ ] `npm install && npm run build` — must be clean
-- [ ] `git add my-mcp/` — **never** `git add -f`, never commit `dist/`
-- [ ] `git commit && git push`
-- [ ] Deploy via Railway MCP (steps 1-8 above)
-- [ ] `curl https://domain/health` — confirm `{"status":"ok"}`
-- [ ] Update `kf-mcp-servers/AGENTS.md` with server details + Railway service ID
-- [ ] Add to `~/.cursor/mcp.json`
+- [ ] Write `src/api.ts` — pure API client functions, no MCP/Express imports
+- [ ] Write `src/index.ts` — Express + `createMcpServer()` with tools/prompts/resources
+- [ ] `npm install && npm run build` — must compile clean with zero TypeScript errors
+- [ ] `curl http://localhost:PORT/health` — confirm `{"status":"ok"}`
+- [ ] Verify tools/prompts/resources appear in Cursor (reload MCP after adding to `mcp.json`)
