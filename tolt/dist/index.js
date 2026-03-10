@@ -64,7 +64,7 @@ Almost all list operations require a \`program_id\`. To find it:
     const pid = defaultProgramId
         ? z.string().optional().describe(`${PROGRAM_ID_DESC} Default: ${defaultProgramId}`)
         : z.string().describe(PROGRAM_ID_DESC);
-    const withPid = (p) => strip({ program_id: defaultProgramId, ...p });
+    const withPid = (p) => strip({ program_id: defaultProgramId, ...strip(p) });
     // ── PARTNERS ──────────────────────────────────────────────────────────────
     server.tool('list_partners', `List all partners.${defaultProgramId ? ` Using default program: ${defaultProgramId}.` : ' Requires program_id.'}`, { program_id: pid, group_id: z.string().optional().describe('Filter by group ID'), expand: expandParam, ...listParams }, async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listPartners(apiKey, withPid(p)), null, 2) }] }));
     server.tool('get_partner', 'Retrieve a single partner by ID.', { id: z.string().describe('Partner ID (e.g. part_...)') }, async ({ id }) => ({ content: [{ type: 'text', text: JSON.stringify(await api.getPartner(apiKey, id), null, 2) }] }));

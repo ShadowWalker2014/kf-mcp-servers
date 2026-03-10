@@ -76,7 +76,7 @@ Almost all list operations require a \`program_id\`. To find it:
     : z.string().describe(PROGRAM_ID_DESC);
 
   const withPid = (p: Record<string, unknown>) =>
-    strip({ program_id: defaultProgramId, ...p });
+    strip({ program_id: defaultProgramId, ...strip(p) });
 
   // ── PARTNERS ──────────────────────────────────────────────────────────────
   server.tool('list_partners', `List all partners.${defaultProgramId ? ` Using default program: ${defaultProgramId}.` : ' Requires program_id.'}`,
