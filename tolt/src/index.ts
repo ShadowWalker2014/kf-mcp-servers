@@ -23,13 +23,58 @@ function strip(obj: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== ''));
 }
 
+const PROGRAM_ID_DESC = 'Your Tolt program ID (e.g. prg_...). Find it at https://app.tolt.io — go to your Program settings, the ID is in the URL or Program details page.';
+
 function createMcpServer(apiKey: string): McpServer {
   const server = new McpServer({ name: 'tolt-mcp', version: '1.0.0' });
 
+  // ── SETUP PROMPT ──────────────────────────────────────────────────────────
+  server.prompt('tolt_setup', 'How to use the Tolt MCP — find your program_id and understand the data model.', {},
+    () => ({
+      messages: [{
+        role: 'user',
+        content: {
+          type: 'text',
+          text: `# Tolt MCP — Setup Guide
+
+## Finding your program_id
+Almost all list operations require a \`program_id\`. To find it:
+1. Log in to https://app.tolt.io
+2. Navigate to your Program (top nav or sidebar)
+3. The program_id is visible in the URL: \`app.tolt.io/programs/prg_XXXXXXX\`
+   or in Program Settings → it starts with \`prg_\`
+
+## Data Model
+- **Partner** (\`part_...\`): An affiliate/referrer who earns commissions
+- **Link** (\`lnk_...\`): A tracking link belonging to a partner (e.g. ?ref=john)
+- **Click** (\`clk_...\`): Recorded when a visitor arrives via a partner link
+- **Customer** (\`cust_...\`): A user referred by a partner who signed up
+- **Transaction** (\`txn_...\`): A payment made by a customer, triggers commission
+- **Commission** (\`comm_...\`): The payout earned by a partner from a transaction
+- **Promotion Code**: A discount code tied to a partner
+
+## Typical workflow
+1. Partner gets a tracking link (create_link)
+2. Visitor clicks it → create_click (stores partner attribution)
+3. Visitor signs up → create_customer (with partner_id from click)
+4. Customer pays → create_transaction (with customer_id)
+5. Tolt auto-creates commission for the partner
+6. List/manage commissions and pay out partners
+
+## Common queries
+- List all partners: \`list_partners\` with \`program_id\`
+- See unpaid commissions: \`list_commissions\` with \`program_id\` + \`status=pending\`
+- See a partner's customers: \`list_customers\` with \`partner_id\`
+`
+        }
+      }]
+    })
+  );
+
   // ── PARTNERS ──────────────────────────────────────────────────────────────
-  server.tool('list_partners', 'List all partners with optional filters and pagination.',
+  server.tool('list_partners', 'List all partners. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
     {
-      program_id: z.string().optional().describe('Filter by program ID'),
+      program_id: z.string().describe(PROGRAM_ID_DESC),
       group_id: z.string().optional().describe('Filter by group ID'),
       expand: expandParam,
       ...listParams,
@@ -80,9 +125,9 @@ function createMcpServer(apiKey: string): McpServer {
   );
 
   // ── CUSTOMERS ─────────────────────────────────────────────────────────────
-  server.tool('list_customers', 'List all customers with optional filters and pagination.',
+  server.tool('list_customers', 'List all customers. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
     {
-      program_id: z.string().optional().describe('Filter by program ID'),
+      program_id: z.string().describe(PROGRAM_ID_DESC),
       partner_id: z.string().optional().describe('Filter by referring partner ID'),
       status: z.enum(['lead', 'trialing', 'active', 'canceled']).optional(),
       expand: expandParam,
@@ -132,9 +177,9 @@ function createMcpServer(apiKey: string): McpServer {
   );
 
   // ── TRANSACTIONS ──────────────────────────────────────────────────────────
-  server.tool('list_transactions', 'List all transactions with optional filters and pagination.',
+  server.tool('list_transactions', 'List all transactions. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
     {
-      program_id: z.string().optional().describe('Filter by program ID'),
+      program_id: z.string().describe(PROGRAM_ID_DESC),
       partner_id: z.string().optional().describe('Filter by partner ID'),
       customer_id: z.string().optional().describe('Filter by customer ID'),
       status: z.string().optional().describe('Filter by status (e.g. paid, refunded)'),
@@ -188,9 +233,9 @@ function createMcpServer(apiKey: string): McpServer {
   );
 
   // ── COMMISSIONS ───────────────────────────────────────────────────────────
-  server.tool('list_commissions', 'List all commissions with optional filters and pagination.',
+  server.tool('list_commissions', 'List all commissions. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
     {
-      program_id: z.string().optional().describe('Filter by program ID'),
+      program_id: z.string().describe(PROGRAM_ID_DESC),
       partner_id: z.string().optional().describe('Filter by partner ID'),
       customer_id: z.string().optional().describe('Filter by customer ID'),
       transaction_id: z.string().optional().describe('Filter by transaction ID'),
@@ -233,9 +278,9 @@ function createMcpServer(apiKey: string): McpServer {
   );
 
   // ── LINKS ─────────────────────────────────────────────────────────────────
-  server.tool('list_links', 'List all tracking links with optional filters and pagination.',
+  server.tool('list_links', 'List all tracking links. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
     {
-      program_id: z.string().optional().describe('Filter by program ID'),
+      program_id: z.string().describe(PROGRAM_ID_DESC),
       partner_id: z.string().optional().describe('Filter by partner ID'),
       ...listParams,
     },
@@ -286,9 +331,9 @@ function createMcpServer(apiKey: string): McpServer {
   );
 
   // ── PROMOTION CODES ───────────────────────────────────────────────────────
-  server.tool('list_promotion_codes', 'List all promotion codes with optional filters and pagination.',
+  server.tool('list_promotion_codes', 'List all promotion codes. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
     {
-      program_id: z.string().optional().describe('Filter by program ID'),
+      program_id: z.string().describe(PROGRAM_ID_DESC),
       partner_id: z.string().optional().describe('Filter by partner ID'),
       ...listParams,
     },
