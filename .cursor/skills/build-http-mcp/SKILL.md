@@ -158,6 +158,91 @@ dist/
 .DS_Store
 ```
 
+## Adding Prompts
+
+Prompts are reusable message templates clients can discover (`prompts/list`) and invoke (`prompts/get`). Use them for common instructions, system prompts, or guided workflows.
+
+```typescript
+import { z } from 'zod';
+
+function createMcpServer(credential: string): McpServer {
+  const server = new McpServer({ name: 'my-mcp', version: '1.0.0' });
+
+  // Register a prompt with typed args (Zod schema)
+  server.registerPrompt(
+    'summarize',
+    {
+      title: 'Summarize Text',
+      description: 'Ask the LLM to summarize provided text',
+      argsSchema: {
+        text: z.string().describe('The text to summarize'),
+        style: z.enum(['bullet', 'paragraph']).describe('Output format').optional(),
+      },
+    },
+    ({ text, style = 'paragraph' }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `Please summarize the following in ${style} form:\n\n${text}`,
+          },
+        },
+      ],
+    })
+  );
+
+  return server;
+}
+```
+
+- `argsSchema` uses plain Zod objects (not `z.object()`).
+- Handler returns `{ messages: [...] }` — the MCP client injects these into the LLM context.
+- Capability is **auto-advertised** as `{ prompts: { listChanged: true } }` once you call `registerPrompt`.
+
+## Adding Resources (documentation / read-only data)
+
+Resources let the server expose structured data by URI. Clients call `resources/list` to discover, `resources/read` to fetch. Use for API docs, schemas, config, or any reference data.
+
+```typescript
+import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
+
+function createMcpServer(credential: string): McpServer {
+  const server = new McpServer({ name: 'my-mcp', version: '1.0.0' });
+
+  // Static resource — fixed URI
+  server.registerResource(
+    'api-overview',
+    'docs://api/overview',
+    {
+      title: 'API Overview',
+      description: 'High-level description of available endpoints',
+      mimeType: 'text/markdown',
+    },
+    async (uri) => ({
+      contents: [{ uri: uri.href, text: '# My API\nEndpoints: ...' }],
+    })
+  );
+
+  // Dynamic resource — URI template with parameters
+  server.registerResource(
+    'table-schema',
+    new ResourceTemplate('db://tables/{tableName}/schema', { list: undefined }),
+    { title: 'Table Schema', mimeType: 'application/json' },
+    async (uri, { tableName }) => {
+      const schema = await getTableSchema(credential, tableName as string);
+      return { contents: [{ uri: uri.href, text: JSON.stringify(schema, null, 2) }] };
+    }
+  );
+
+  return server;
+}
+```
+
+- Capability is **auto-advertised** as `{ resources: { listChanged: true, subscribe: true } }` once you call `registerResource`.
+- For binary content use `blob: base64string` instead of `text`.
+- `ResourceTemplate` URI variables (`{tableName}`) are passed as the second argument to the handler.
+
 ## Key design rules
 
 - **Stateless** — `sessionIdGenerator: undefined` + `enableJsonResponse: true`. No session maps.
