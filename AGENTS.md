@@ -80,11 +80,22 @@ kf-mcp-servers/
 - **Deprecated**: Old repo at `~/Developer/blink-cms` — no longer maintained
 
 ## Railway Deployment Pattern
-Each server in this monorepo deploys as its own Railway service:
-1. Connect Railway service to this GitHub repo
-2. Set **Root Directory** = `<server-folder>/` (e.g. `blink-cms/`)
-3. Railway picks up the `Dockerfile` and `railway.json` within that folder
-4. Set env vars per service in Railway dashboard
+Each server deploys as its own Railway service. **Use nixpacks (no Dockerfile)** — simpler, faster, no caching hell.
+
+**Critical steps when creating a new service via API:**
+1. `create_service` → `connect_service` (repo + branch=main)
+2. `update_service_instance` → set `root_directory`, `build_command: "npm run build"`, `start_command: "node dist/index.js"`, `watch_patterns: ["<name>/**"]`, `healthcheck_path: "/health"`
+3. `set_variables_bulk` → `MCP_API_KEY`, `PORT`, any credential env vars
+4. `create_deployment_trigger` → provider=GITHUB, repo, branch=main ← **CRITICAL: without this, pushes don't auto-deploy**
+5. `generate_domain` → get public URL
+6. `git push` → Railway auto-builds via the trigger
+
+**Railway deployment lessons learned:**
+- `serviceInstanceRedeploy` / `serviceInstanceDeploy` = restart existing image, NOT a fresh build — pushing a commit is the only way to trigger a real rebuild
+- `create_deployment_trigger` must be called explicitly — it is NOT created automatically when you connect a repo via API (only via dashboard)
+- **Never commit `dist/`** — if compiled output is in git, nixpacks skips compilation and runs stale code. Use `git rm -r --cached <name>/dist/` if accidentally committed
+- **Never use Dockerfile** — Railway's nixpacks auto-detects Node.js, runs `npm run build`, starts with `node dist/index.js`. Dockerfiles cause layer-cache issues that are hard to debug
+- `dockerfilePath: ""` (empty string) clears the Dockerfile setting via GraphQL API if it gets stuck
 
 ### tolt
 - **Purpose**: Tolt affiliate/partner management — partners, customers, transactions, commissions, links, clicks, promotion codes
@@ -101,8 +112,12 @@ Each server in this monorepo deploys as its own Railway service:
 - **Railway**: Root dir = `tolt/`, nixpacks, branch=main, watch_patterns=`tolt/**`
 
 ## Adding a New MCP Server
-1. Create `<name>/` folder with: `src/`, `Dockerfile`, `railway.json`, `package.json`, `tsconfig.json`
-2. Use Express + `@modelcontextprotocol/sdk` StreamableHTTPServerTransport (stateless)
-3. Always expose `GET /health` and `POST /mcp`
-4. Add auth via `MCP_API_KEY` env var
-5. Update this AGENTS.md with server details
+1. Create `<name>/src/` folder with `src/index.ts`, `src/api.ts`, `package.json`, `tsconfig.json`, `railway.json`, `.gitignore`
+2. **No Dockerfile** — use nixpacks. `railway.json` = `{"build":{"builder":"NIXPACKS"},"deploy":{"healthcheckPath":"/health","startCommand":"node dist/index.js"}}`
+3. Use Express + `@modelcontextprotocol/sdk` StreamableHTTPServerTransport (stateless)
+4. Always expose `GET /health` and `POST /mcp`
+5. Add auth via `MCP_API_KEY` env var
+6. `npm install && npm run build` — confirm clean
+7. **Do NOT** `git add -f` — never commit `dist/`, only commit `src/`, config files, `package-lock.json`
+8. Deploy via Railway MCP (see deployment pattern above)
+9. Update this AGENTS.md with server details + Railway service ID
