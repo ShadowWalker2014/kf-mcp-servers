@@ -1,6 +1,6 @@
 {
   "name": "tolt-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "HTTP MCP server for Tolt affiliate/partner management — partners, customers, transactions, commissions, links, clicks, promotion codes",
   "type": "module",
   "scripts": {
