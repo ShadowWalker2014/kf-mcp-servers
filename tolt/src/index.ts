@@ -23,9 +23,9 @@ function strip(obj: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== ''));
 }
 
-const PROGRAM_ID_DESC = 'Your Tolt program ID (e.g. prg_...). Find it at https://app.tolt.io — go to your Program settings, the ID is in the URL or Program details page.';
+const PROGRAM_ID_DESC = 'Your Tolt program ID (e.g. prg_...). Find it at https://app.tolt.io — go to your Program settings, the ID is in the URL or Program details page. If X-Tolt-Program-Id header is set, this defaults automatically.';
 
-function createMcpServer(apiKey: string): McpServer {
+function createMcpServer(apiKey: string, defaultProgramId?: string): McpServer {
   const server = new McpServer({ name: 'tolt-mcp', version: '1.0.0' });
 
   // ── SETUP PROMPT ──────────────────────────────────────────────────────────
@@ -71,15 +71,17 @@ Almost all list operations require a \`program_id\`. To find it:
     })
   );
 
+  const pid = defaultProgramId
+    ? z.string().optional().describe(`${PROGRAM_ID_DESC} Default: ${defaultProgramId}`)
+    : z.string().describe(PROGRAM_ID_DESC);
+
+  const withPid = (p: Record<string, unknown>) =>
+    strip({ program_id: defaultProgramId, ...p });
+
   // ── PARTNERS ──────────────────────────────────────────────────────────────
-  server.tool('list_partners', 'List all partners. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
-    {
-      program_id: z.string().describe(PROGRAM_ID_DESC),
-      group_id: z.string().optional().describe('Filter by group ID'),
-      expand: expandParam,
-      ...listParams,
-    },
-    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listPartners(apiKey, strip(p)), null, 2) }] })
+  server.tool('list_partners', `List all partners.${defaultProgramId ? ` Using default program: ${defaultProgramId}.` : ' Requires program_id.'}`,
+    { program_id: pid, group_id: z.string().optional().describe('Filter by group ID'), expand: expandParam, ...listParams },
+    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listPartners(apiKey, withPid(p)), null, 2) }] })
   );
 
   server.tool('get_partner', 'Retrieve a single partner by ID.',
@@ -125,15 +127,9 @@ Almost all list operations require a \`program_id\`. To find it:
   );
 
   // ── CUSTOMERS ─────────────────────────────────────────────────────────────
-  server.tool('list_customers', 'List all customers. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
-    {
-      program_id: z.string().describe(PROGRAM_ID_DESC),
-      partner_id: z.string().optional().describe('Filter by referring partner ID'),
-      status: z.enum(['lead', 'trialing', 'active', 'canceled']).optional(),
-      expand: expandParam,
-      ...listParams,
-    },
-    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listCustomers(apiKey, strip(p)), null, 2) }] })
+  server.tool('list_customers', `List all customers.${defaultProgramId ? ` Using default program: ${defaultProgramId}.` : ' Requires program_id.'}`,
+    { program_id: pid, partner_id: z.string().optional().describe('Filter by referring partner ID'), status: z.enum(['lead', 'trialing', 'active', 'canceled']).optional(), expand: expandParam, ...listParams },
+    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listCustomers(apiKey, withPid(p)), null, 2) }] })
   );
 
   server.tool('get_customer', 'Retrieve a single customer by ID.',
@@ -177,16 +173,9 @@ Almost all list operations require a \`program_id\`. To find it:
   );
 
   // ── TRANSACTIONS ──────────────────────────────────────────────────────────
-  server.tool('list_transactions', 'List all transactions. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
-    {
-      program_id: z.string().describe(PROGRAM_ID_DESC),
-      partner_id: z.string().optional().describe('Filter by partner ID'),
-      customer_id: z.string().optional().describe('Filter by customer ID'),
-      status: z.string().optional().describe('Filter by status (e.g. paid, refunded)'),
-      expand: expandParam,
-      ...listParams,
-    },
-    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listTransactions(apiKey, strip(p)), null, 2) }] })
+  server.tool('list_transactions', `List all transactions.${defaultProgramId ? ` Using default program: ${defaultProgramId}.` : ' Requires program_id.'}`,
+    { program_id: pid, partner_id: z.string().optional().describe('Filter by partner ID'), customer_id: z.string().optional().describe('Filter by customer ID'), status: z.string().optional().describe('Filter by status (e.g. paid, refunded)'), expand: expandParam, ...listParams },
+    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listTransactions(apiKey, withPid(p)), null, 2) }] })
   );
 
   server.tool('get_transaction', 'Retrieve a single transaction by ID.',
@@ -233,17 +222,9 @@ Almost all list operations require a \`program_id\`. To find it:
   );
 
   // ── COMMISSIONS ───────────────────────────────────────────────────────────
-  server.tool('list_commissions', 'List all commissions. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
-    {
-      program_id: z.string().describe(PROGRAM_ID_DESC),
-      partner_id: z.string().optional().describe('Filter by partner ID'),
-      customer_id: z.string().optional().describe('Filter by customer ID'),
-      transaction_id: z.string().optional().describe('Filter by transaction ID'),
-      status: z.string().optional().describe('Filter by status (e.g. pending, paid)'),
-      expand: expandParam,
-      ...listParams,
-    },
-    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listCommissions(apiKey, strip(p)), null, 2) }] })
+  server.tool('list_commissions', `List all commissions.${defaultProgramId ? ` Using default program: ${defaultProgramId}.` : ' Requires program_id.'}`,
+    { program_id: pid, partner_id: z.string().optional().describe('Filter by partner ID'), customer_id: z.string().optional().describe('Filter by customer ID'), transaction_id: z.string().optional().describe('Filter by transaction ID'), status: z.string().optional().describe('Filter by status (e.g. pending, paid)'), expand: expandParam, ...listParams },
+    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listCommissions(apiKey, withPid(p)), null, 2) }] })
   );
 
   server.tool('get_commission', 'Retrieve a single commission by ID.',
@@ -278,13 +259,9 @@ Almost all list operations require a \`program_id\`. To find it:
   );
 
   // ── LINKS ─────────────────────────────────────────────────────────────────
-  server.tool('list_links', 'List all tracking links. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
-    {
-      program_id: z.string().describe(PROGRAM_ID_DESC),
-      partner_id: z.string().optional().describe('Filter by partner ID'),
-      ...listParams,
-    },
-    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listLinks(apiKey, strip(p)), null, 2) }] })
+  server.tool('list_links', `List all tracking links.${defaultProgramId ? ` Using default program: ${defaultProgramId}.` : ' Requires program_id.'}`,
+    { program_id: pid, partner_id: z.string().optional().describe('Filter by partner ID'), ...listParams },
+    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listLinks(apiKey, withPid(p)), null, 2) }] })
   );
 
   server.tool('get_link', 'Retrieve a single tracking link by ID.',
@@ -331,13 +308,9 @@ Almost all list operations require a \`program_id\`. To find it:
   );
 
   // ── PROMOTION CODES ───────────────────────────────────────────────────────
-  server.tool('list_promotion_codes', 'List all promotion codes. Requires program_id (find it at https://app.tolt.io in your Program settings URL).',
-    {
-      program_id: z.string().describe(PROGRAM_ID_DESC),
-      partner_id: z.string().optional().describe('Filter by partner ID'),
-      ...listParams,
-    },
-    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listPromoCodes(apiKey, strip(p)), null, 2) }] })
+  server.tool('list_promotion_codes', `List all promotion codes.${defaultProgramId ? ` Using default program: ${defaultProgramId}.` : ' Requires program_id.'}`,
+    { program_id: pid, partner_id: z.string().optional().describe('Filter by partner ID'), ...listParams },
+    async (p) => ({ content: [{ type: 'text', text: JSON.stringify(await api.listPromoCodes(apiKey, withPid(p)), null, 2) }] })
   );
 
   server.tool('get_promotion_code', 'Retrieve a single promotion code by ID.',
@@ -388,6 +361,10 @@ function resolveApiKey(req: Request): string | null {
   return (req.headers['x-tolt-api-key'] as string | undefined) ?? process.env.TOLT_API_KEY ?? null;
 }
 
+function resolveProgramId(req: Request): string | undefined {
+  return (req.headers['x-tolt-program-id'] as string | undefined) ?? process.env.TOLT_PROGRAM_ID ?? undefined;
+}
+
 const app = express();
 app.use(express.json());
 
@@ -403,7 +380,7 @@ app.post('/mcp', authenticate, async (req: Request, res: Response) => {
   });
 
   res.on('close', () => transport.close());
-  const server = createMcpServer(apiKey);
+  const server = createMcpServer(apiKey, resolveProgramId(req));
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
 });
