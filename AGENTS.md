@@ -86,6 +86,19 @@ Each server in this monorepo deploys as its own Railway service:
 3. Railway picks up the `Dockerfile` and `railway.json` within that folder
 4. Set env vars per service in Railway dashboard
 
+### tolt
+- **Purpose**: Tolt affiliate/partner management — partners, customers, transactions, commissions, links, clicks, promotion codes
+- **Transport**: HTTP (Express + Streamable HTTP)
+- **Port**: 3700
+- **Auth (MCP)**: `MCP_API_KEY` via `Authorization: Bearer` or `x-api-key` header
+- **Tolt Key**: `X-Tolt-Api-Key` header per request (or `TOLT_API_KEY` env fallback)
+- **Endpoint**: `POST /mcp`
+- **Health**: `GET /health`
+- **URL**: `https://tolt-mcp-production.up.railway.app`
+- **Tools (32 total)**: `list_partners`, `get_partner`, `create_partner`, `update_partner`, `delete_partner`, `list_customers`, `get_customer`, `create_customer`, `update_customer`, `delete_customer`, `list_transactions`, `get_transaction`, `create_transaction`, `update_transaction`, `delete_transaction`, `refund_transaction`, `list_commissions`, `get_commission`, `create_commission`, `update_commission`, `delete_commission`, `list_links`, `get_link`, `create_link`, `update_link`, `delete_link`, `create_click`, `list_promotion_codes`, `get_promotion_code`, `create_promotion_code`, `update_promotion_code`, `delete_promotion_code`
+- **Env vars**: `MCP_API_KEY`, `TOLT_API_KEY`, `PORT`
+- **Railway**: Root dir = `tolt/`
+
 ## Adding a New MCP Server
 1. Create `<name>/` folder with: `src/`, `Dockerfile`, `railway.json`, `package.json`, `tsconfig.json`
 2. Use Express + `@modelcontextprotocol/sdk` StreamableHTTPServerTransport (stateless)
