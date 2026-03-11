@@ -111,6 +111,21 @@ Each server deploys as its own Railway service. **Use nixpacks (no Dockerfile)**
 - **Railway service ID**: `e130c38c-091d-4cd5-acdf-052ec33cf631`
 - **Railway**: Root dir = `tolt/`, nixpacks, branch=main, watch_patterns=`tolt/**`
 
+### video-mcp
+- **Purpose**: Analyze any public video (Loom, YouTube, Vimeo, etc.) with Gemini 2.0 Flash — comprehensive visual+audio analysis for engineering bug reports, feature demos, etc.
+- **Transport**: HTTP (Express + Streamable HTTP)
+- **Port**: 3600
+- **Auth (MCP)**: `MCP_API_KEY` via `Authorization: Bearer` or `x-api-key` header
+- **Gemini Key**: `X-Gemini-Api-Key` header per request (or `GEMINI_API_KEY` env fallback)
+- **Endpoint**: `POST /mcp`
+- **Health**: `GET /health`
+- **URL**: `https://video-mcp-production-2dc2.up.railway.app`
+- **Tools**: `analyze_video` (download + Gemini analysis — visual content, audio, actions, technical details, engineering action items), `get_video_info` (metadata only, fast)
+- **Env vars**: `MCP_API_KEY`, `GEMINI_API_KEY`, `PORT`
+- **Railway service ID**: `8310e2e4-8357-42cb-99e1-09afcc372b25`
+- **Railway**: Root dir = `video/`, nixpacks with nodejs_22 + yt-dlp + ffmpeg, branch=main, watch_patterns=`video/**`
+- **Note**: `nixpacks.toml` must explicitly include `nodejs_22` when overriding nixPkgs (otherwise Node.js is dropped)
+
 ## Adding a New MCP Server
 
 **Build**: Follow `.cursor/skills/build-http-mcp/SKILL.md` for the full template (Express + StreamableHTTP, tools/prompts/resources, OAuth).
