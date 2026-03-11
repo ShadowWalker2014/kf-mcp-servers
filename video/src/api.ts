@@ -13,6 +13,7 @@ const execAsync = promisify(exec);
 const YT_DLP = process.env.YT_DLP_PATH || 'yt-dlp';
 
 const INSTAGRAM_DOMAINS = new Set(['instagram.com', 'www.instagram.com']);
+const TIKTOK_DOMAINS = new Set(['tiktok.com', 'www.tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com']);
 
 let apifyClient: ApifyClient | null = null;
 function getApifyClient(): ApifyClient {
@@ -24,30 +25,51 @@ function getApifyClient(): ApifyClient {
   return apifyClient;
 }
 
-async function downloadViaApify(url: string, outputPath: string): Promise<void> {
+async function downloadViaApify(
+  url: string,
+  outputPath: string,
+  platform: 'instagram' | 'tiktok'
+): Promise<void> {
   const client = getApifyClient();
 
-  // Run apify/instagram-scraper for the specific post URL
-  const run = await client.actor('apify/instagram-scraper').call({
-    directUrls: [url],
-    resultsType: 'posts',
-    resultsLimit: 1,
-    searchType: 'hashtag',
-    searchLimit: 1,
-    addParentData: false,
-  });
+  let run;
 
-  // Fetch dataset results
+  if (platform === 'instagram') {
+    // apify/instagram-scraper — accepts directUrls with specific post URL
+    run = await client.actor('apify/instagram-scraper').call({
+      directUrls: [url],
+      resultsType: 'posts',
+      resultsLimit: 1,
+      searchType: 'hashtag',
+      searchLimit: 1,
+      addParentData: false,
+    });
+  } else {
+    // clockworks/tiktok-profile-scraper — same actor used in creator-crm
+    // accepts postURLs for scraping specific videos directly
+    run = await client.actor('clockworks/tiktok-profile-scraper').call({
+      postURLs: [url],
+      shouldDownloadVideos: false,
+      shouldDownloadCovers: false,
+      shouldDownloadSubtitles: false,
+      shouldDownloadSlideshowImages: false,
+      shouldDownloadAvatars: false,
+    });
+  }
+
   const { items } = await client.dataset(run.defaultDatasetId).listItems();
-  if (!items.length) throw new Error('Apify Instagram scraper returned no results');
+  if (!items.length) throw new Error(`Apify ${platform} scraper returned no results`);
 
   const post = items[0] as Record<string, unknown>;
 
-  // apify/instagram-scraper returns videoUrl for video posts
-  const videoUrl = (post.videoUrl as string | undefined);
+  // Both Instagram and TikTok actors return videoUrl for video content
+  // TikTok also has webVideoUrl as fallback
+  const videoUrl = (post.videoUrl as string | undefined)
+    ?? (post.webVideoUrl as string | undefined);
+
   if (!videoUrl) {
     throw new Error(
-      `No videoUrl in Apify result. Post type: ${post.type}. ` +
+      `No videoUrl in Apify ${platform} result. ` +
       `Available keys: ${Object.keys(post).join(', ')}`
     );
   }
@@ -55,7 +77,7 @@ async function downloadViaApify(url: string, outputPath: string): Promise<void> 
   await execAsync(`curl -sL --max-time 120 -o "${outputPath}" "${videoUrl}"`, { timeout: 130_000 });
 
   const fileExists = await access(outputPath).then(() => true).catch(() => false);
-  if (!fileExists) throw new Error('Failed to download video from Instagram CDN via Apify');
+  if (!fileExists) throw new Error(`Failed to download ${platform} video via Apify`);
 }
 
 const ANALYSIS_PROMPT = `You are a senior technical analyst reviewing a screen recording video. Produce an exhaustive analysis that an engineer can use to understand and act on the content WITHOUT watching the video themselves.
@@ -99,7 +121,9 @@ export async function downloadVideo(url: string): Promise<string> {
   const hostname = new URL(url).hostname;
 
   if (INSTAGRAM_DOMAINS.has(hostname)) {
-    await downloadViaApify(url, outputPath);
+    await downloadViaApify(url, outputPath, 'instagram');
+  } else if (TIKTOK_DOMAINS.has(hostname)) {
+    await downloadViaApify(url, outputPath, 'tiktok');
   } else {
     await execAsync(
       `"${YT_DLP}" -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best" --merge-output-format mp4 -o "${outputPath}" "${url}"`,
@@ -117,6 +141,11 @@ export async function getVideoTitle(url: string): Promise<string> {
   if (INSTAGRAM_DOMAINS.has(hostname)) {
     const match = url.match(/\/(p|reel|tv)\/([^/?]+)/);
     return match ? `Instagram ${match[1]} ${match[2]}` : url;
+  }
+
+  if (TIKTOK_DOMAINS.has(hostname)) {
+    const match = url.match(/\/video\/(\d+)/);
+    return match ? `TikTok video ${match[1]}` : url;
   }
 
   const { stdout } = await execAsync(
