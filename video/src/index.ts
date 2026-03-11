@@ -51,8 +51,9 @@ function createMcpServer(geminiApiKey: string): McpServer {
       const { stdout } = await (async () => {
         const { exec } = await import('child_process');
         const { promisify } = await import('util');
+        const ytDlp = process.env.YT_DLP_PATH || 'yt-dlp';
         return promisify(exec)(
-          `yt-dlp --dump-json --no-download "${url}"`,
+          `"${ytDlp}" --dump-json --no-download "${url}"`,
           { timeout: 30_000 }
         );
       })();

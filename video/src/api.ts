@@ -9,6 +9,9 @@ import { GoogleAIFileManager, FileState } from '@google/generative-ai/server';
 
 const execAsync = promisify(exec);
 
+// Support explicit path for environments where yt-dlp isn't on PATH (e.g. Railway)
+const YT_DLP = process.env.YT_DLP_PATH || 'yt-dlp';
+
 const ANALYSIS_PROMPT = `You are a senior technical analyst reviewing a screen recording video. Produce an exhaustive analysis that an engineer can use to understand and act on the content WITHOUT watching the video themselves.
 
 Structure your response as follows:
@@ -49,7 +52,7 @@ export async function downloadVideo(url: string): Promise<string> {
   const outputPath = join(tmpdir(), `video-${id}.mp4`);
 
   await execAsync(
-    `yt-dlp -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best" --merge-output-format mp4 -o "${outputPath}" "${url}"`,
+    `"${YT_DLP}" -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best" --merge-output-format mp4 -o "${outputPath}" "${url}"`,
     { timeout: 180_000 }
   );
 
@@ -58,7 +61,7 @@ export async function downloadVideo(url: string): Promise<string> {
 }
 
 export async function getVideoTitle(url: string): Promise<string> {
-  const { stdout } = await execAsync(`yt-dlp --get-title "${url}"`, { timeout: 30_000 });
+  const { stdout } = await execAsync(`"${YT_DLP}" --get-title "${url}"`, { timeout: 30_000 });
   return stdout.trim();
 }
 
