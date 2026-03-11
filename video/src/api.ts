@@ -1,9 +1,10 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { unlink, access, writeFile } from 'fs/promises';
+import { unlink, access } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
+import { ApifyClient } from 'apify-client';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { GoogleAIFileManager, FileState } from '@google/generative-ai/server';
 
@@ -11,83 +12,50 @@ const execAsync = promisify(exec);
 
 const YT_DLP = process.env.YT_DLP_PATH || 'yt-dlp';
 
-// Domains where yt-dlp is unreliable from cloud IPs — use cobalt instead
-const COBALT_DOMAINS = new Set([
-  'instagram.com',
-  'www.instagram.com',
-  'tiktok.com',
-  'www.tiktok.com',
-  'vm.tiktok.com',
-  'twitter.com',
-  'www.twitter.com',
-  'x.com',
-  'www.x.com',
-]);
+const INSTAGRAM_DOMAINS = new Set(['instagram.com', 'www.instagram.com']);
 
-// Cobalt public instances ordered by score (checked 2026-03-11)
-// Source: https://instances.cobalt.best/api — all confirmed instagram: true
-const COBALT_INSTANCES = [
-  'cobalt-api.meowing.de',       // score 88, independent
-  'cobalt-backend.canine.tools', // score 84, independent
-  'kityune.imput.net',           // score 76, official cobalt.tools backend
-  'blossom.imput.net',           // score 76, official cobalt.tools backend
-  'nachos.imput.net',            // score 72, official cobalt.tools backend
-  'sunny.imput.net',             // score 72, official cobalt.tools backend
-];
-
-interface CobaltResponse {
-  status: 'redirect' | 'tunnel' | 'picker' | 'error';
-  url?: string;
-  filename?: string;
-  picker?: Array<{ type: string; url: string; thumb?: string }>;
-  audio?: string;
-  error?: { code: string };
+let apifyClient: ApifyClient | null = null;
+function getApifyClient(): ApifyClient {
+  if (!apifyClient) {
+    const token = process.env.APIFY_API_KEY;
+    if (!token) throw new Error('APIFY_API_KEY env var not set');
+    apifyClient = new ApifyClient({ token });
+  }
+  return apifyClient;
 }
 
-async function downloadViaCobalt(url: string, outputPath: string): Promise<void> {
-  let lastError = '';
+async function downloadViaApify(url: string, outputPath: string): Promise<void> {
+  const client = getApifyClient();
 
-  for (const instance of COBALT_INSTANCES) {
-    let data: CobaltResponse;
+  // Run apify/instagram-scraper for the specific post URL
+  const run = await client.actor('apify/instagram-scraper').call({
+    directUrls: [url],
+    resultsType: 'posts',
+    resultsLimit: 1,
+    searchType: 'hashtag',
+    searchLimit: 1,
+    addParentData: false,
+  });
 
-    const res = await fetch(`https://${instance}/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ url, videoQuality: '720', downloadMode: 'auto' }),
-      signal: AbortSignal.timeout(15_000),
-    }).catch(() => null);
+  // Fetch dataset results
+  const { items } = await client.dataset(run.defaultDatasetId).listItems();
+  if (!items.length) throw new Error('Apify Instagram scraper returned no results');
 
-    if (!res?.ok) { lastError = `${instance}: HTTP ${res?.status ?? 'unreachable'}`; continue; }
+  const post = items[0] as Record<string, unknown>;
 
-    data = await res.json() as CobaltResponse;
-
-    if (data.status === 'error') { lastError = `${instance}: ${data.error?.code}`; continue; }
-
-    let videoUrl: string | null = null;
-
-    if (data.status === 'redirect' || data.status === 'tunnel') {
-      videoUrl = data.url ?? null;
-    } else if (data.status === 'picker') {
-      // Carousels — pick first video, fallback to first item
-      const item = data.picker?.find((p) => p.type === 'video') ?? data.picker?.[0];
-      videoUrl = item?.url ?? null;
-    }
-
-    if (!videoUrl) { lastError = `${instance}: no video URL in response`; continue; }
-
-    // Download via curl — handles redirects, streaming, auth headers transparently
-    const { stderr } = await execAsync(
-      `curl -sL --max-time 120 -o "${outputPath}" "${videoUrl}"`,
-      { timeout: 130_000 }
-    ).catch((e: Error) => ({ stderr: e.message }));
-
-    const fileExists = await access(outputPath).then(() => true).catch(() => false);
-    if (!fileExists) { lastError = `${instance}: curl failed — ${stderr}`; continue; }
-
-    return; // success
+  // apify/instagram-scraper returns videoUrl for video posts
+  const videoUrl = (post.videoUrl as string | undefined);
+  if (!videoUrl) {
+    throw new Error(
+      `No videoUrl in Apify result. Post type: ${post.type}. ` +
+      `Available keys: ${Object.keys(post).join(', ')}`
+    );
   }
 
-  throw new Error(`All cobalt instances failed. Last error: ${lastError}`);
+  await execAsync(`curl -sL --max-time 120 -o "${outputPath}" "${videoUrl}"`, { timeout: 130_000 });
+
+  const fileExists = await access(outputPath).then(() => true).catch(() => false);
+  if (!fileExists) throw new Error('Failed to download video from Instagram CDN via Apify');
 }
 
 const ANALYSIS_PROMPT = `You are a senior technical analyst reviewing a screen recording video. Produce an exhaustive analysis that an engineer can use to understand and act on the content WITHOUT watching the video themselves.
@@ -130,8 +98,8 @@ export async function downloadVideo(url: string): Promise<string> {
   const outputPath = join(tmpdir(), `video-${id}.mp4`);
   const hostname = new URL(url).hostname;
 
-  if (COBALT_DOMAINS.has(hostname)) {
-    await downloadViaCobalt(url, outputPath);
+  if (INSTAGRAM_DOMAINS.has(hostname)) {
+    await downloadViaApify(url, outputPath);
   } else {
     await execAsync(
       `"${YT_DLP}" -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best" --merge-output-format mp4 -o "${outputPath}" "${url}"`,
@@ -146,9 +114,8 @@ export async function downloadVideo(url: string): Promise<string> {
 export async function getVideoTitle(url: string): Promise<string> {
   const hostname = new URL(url).hostname;
 
-  if (COBALT_DOMAINS.has(hostname)) {
-    // Cobalt doesn't expose titles — derive from URL
-    const match = url.match(/\/(p|reel|shorts)\/([^/?]+)/);
+  if (INSTAGRAM_DOMAINS.has(hostname)) {
+    const match = url.match(/\/(p|reel|tv)\/([^/?]+)/);
     return match ? `Instagram ${match[1]} ${match[2]}` : url;
   }
 
