@@ -89,7 +89,7 @@ export async function analyzeVideoFile(
     throw new Error(`Gemini file processing failed with state: ${file.state}`);
   }
 
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-001' });
   const result = await model.generateContent([
     { fileData: { mimeType: 'video/mp4', fileUri: file.uri } },
     customPrompt ?? ANALYSIS_PROMPT,
