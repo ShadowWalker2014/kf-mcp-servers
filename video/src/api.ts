@@ -74,37 +74,30 @@ async function downloadViaApify(
       (item) => String(item.id) === videoId || (item.webVideoUrl as string)?.includes(videoId)
     ) ?? allItemsTyped[0]; // fallback to most recent if not found
 
-    // When shouldDownloadVideos: true, Apify saves to key-value store.
-    // The item includes a videoPath field pointing to Apify storage URL,
-    // or falls back to the CDN videoUrl with proper headers.
-    const apifyStorageUrl = (matchedItem.videoPath as string | undefined)
-      ?? (matchedItem.videoDownloadedPath as string | undefined);
+    // Field lookup across different versions of the TikTok scraper actor:
+    // - videoPath / videoDownloadedPath: Apify key-value store URL (when shouldDownloadVideos=true)
+    // - videoUrl: direct CDN mp4 URL
+    // - mediaUrls: array of CDN URLs (most common in current actor version)
+    const mediaUrls = matchedItem.mediaUrls as string[] | undefined;
+    const cdnUrl = (matchedItem.videoPath as string | undefined)
+      ?? (matchedItem.videoDownloadedPath as string | undefined)
+      ?? (matchedItem.videoUrl as string | undefined)
+      ?? (Array.isArray(mediaUrls) && mediaUrls.length > 0 ? mediaUrls[0] : undefined);
 
-    const cdnUrl = (matchedItem.videoUrl as string | undefined);
-
-    if (!apifyStorageUrl && !cdnUrl) {
+    if (!cdnUrl) {
       throw new Error(
         `No video URL in Apify TikTok result. Keys: ${Object.keys(matchedItem).join(', ')}`
       );
     }
 
-    if (apifyStorageUrl) {
-      // Apify storage URLs need the API token for auth
-      const token = process.env.APIFY_API_KEY;
-      await execAsync(
-        `curl -sL --fail --max-time 120 -H "Authorization: Bearer ${token}" -o "${outputPath}" "${apifyStorageUrl}"`,
-        { timeout: 130_000 }
-      );
-    } else {
-      // CDN URL — add TikTok-specific headers so CDN doesn't return HTML error
-      await execAsync(
-        `curl -sL --fail --max-time 120 ` +
-        `-H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" ` +
-        `-H "Referer: https://www.tiktok.com/" ` +
-        `-o "${outputPath}" "${cdnUrl}"`,
-        { timeout: 130_000 }
-      );
-    }
+    // TikTok CDN URLs need browser-like headers to avoid being served an HTML error page
+    await execAsync(
+      `curl -sL --fail --max-time 120 ` +
+      `-H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" ` +
+      `-H "Referer: https://www.tiktok.com/" ` +
+      `-o "${outputPath}" "${cdnUrl}"`,
+      { timeout: 130_000 }
+    );
 
     const fileExists = await access(outputPath).then(() => true).catch(() => false);
     if (!fileExists) throw new Error('Failed to download TikTok video via Apify');
