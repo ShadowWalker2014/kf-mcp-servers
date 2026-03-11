@@ -1,2 +1,8 @@
 [phases.setup]
-nixPkgs = ["nodejs_22", "yt-dlp", "ffmpeg"]
+nixPkgs = ["nodejs_22", "ffmpeg", "curl"]
+
+[phases.install]
+cmds = [
+  "mkdir -p /app/bin && curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /app/bin/yt-dlp && chmod +x /app/bin/yt-dlp",
+  "npm ci"
+]
