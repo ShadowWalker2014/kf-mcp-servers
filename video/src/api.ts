@@ -46,15 +46,47 @@ async function downloadViaApify(
     });
   } else {
     // clockworks/tiktok-profile-scraper — same actor used in creator-crm
-    // accepts postURLs for scraping specific videos directly
+    // Requires a username (profiles field), so extract from the URL
+    // URL format: https://www.tiktok.com/@username/video/123456
+    const tiktokMatch = url.match(/@([^/]+)\/video\/(\d+)/);
+    if (!tiktokMatch) throw new Error(`Could not extract TikTok username/video ID from URL: ${url}`);
+    const [, username, videoId] = tiktokMatch;
+
     run = await client.actor('clockworks/tiktok-profile-scraper').call({
-      postURLs: [url],
+      profiles: [username],
+      profileScrapeSections: ['videos'],
+      profileSorting: 'latest',
+      resultsPerPage: 30,
+      excludePinnedPosts: false,
       shouldDownloadVideos: false,
       shouldDownloadCovers: false,
       shouldDownloadSubtitles: false,
       shouldDownloadSlideshowImages: false,
       shouldDownloadAvatars: false,
     });
+
+    const { items: allItems } = await client.dataset(run.defaultDatasetId).listItems();
+    if (!allItems.length) throw new Error('Apify TikTok scraper returned no results');
+
+    // Find the specific video by ID
+    const allItemsTyped = allItems as Record<string, unknown>[];
+    const matchedItem = allItemsTyped.find(
+      (item) => String(item.id) === videoId || (item.webVideoUrl as string)?.includes(videoId)
+    ) ?? allItemsTyped[0]; // fallback to most recent if not found
+
+    const videoUrl = (matchedItem.videoUrl as string | undefined)
+      ?? (matchedItem.webVideoUrl as string | undefined);
+
+    if (!videoUrl) {
+      throw new Error(
+        `No videoUrl in Apify TikTok result. Available keys: ${Object.keys(matchedItem).join(', ')}`
+      );
+    }
+
+    await execAsync(`curl -sL --max-time 120 -o "${outputPath}" "${videoUrl}"`, { timeout: 130_000 });
+    const fileExists = await access(outputPath).then(() => true).catch(() => false);
+    if (!fileExists) throw new Error('Failed to download TikTok video via Apify');
+    return;
   }
 
   const { items } = await client.dataset(run.defaultDatasetId).listItems();
@@ -62,8 +94,7 @@ async function downloadViaApify(
 
   const post = items[0] as Record<string, unknown>;
 
-  // Both Instagram and TikTok actors return videoUrl for video content
-  // TikTok also has webVideoUrl as fallback
+  // Instagram actor returns videoUrl for video content
   const videoUrl = (post.videoUrl as string | undefined)
     ?? (post.webVideoUrl as string | undefined);
 
