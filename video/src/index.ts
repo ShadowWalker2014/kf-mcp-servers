@@ -27,8 +27,11 @@ function createMcpServer(geminiApiKey: string): McpServer {
 
       const title = await getVideoTitle(url).catch(() => url);
       videoPath = await downloadVideo(url);
-      const analysis = await analyzeVideoFile(geminiApiKey, videoPath, prompt);
-      await cleanupTempFile(videoPath);
+
+      // Always clean up the temp file — even if Gemini analysis fails
+      const analysis = await analyzeVideoFile(geminiApiKey, videoPath, prompt).finally(() => {
+        if (videoPath) cleanupTempFile(videoPath);
+      });
 
       return {
         content: [

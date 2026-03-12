@@ -1,12 +1,33 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { unlink, access } from 'fs/promises';
+import { unlink, access, stat, readdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import { ApifyClient } from 'apify-client';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { GoogleAIFileManager, FileState } from '@google/generative-ai/server';
+
+// Max video file size: 500MB — Gemini Files API limit is 2GB but we keep it sane
+const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
+
+// On startup, sweep any orphaned video-*.mp4 files older than 1 hour from prior crashes
+async function sweepOrphanedTempFiles(): Promise<void> {
+  const dir = tmpdir();
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  const entries = await readdir(dir).catch(() => [] as string[]);
+  await Promise.all(
+    entries
+      .filter((f) => f.startsWith('video-') && f.endsWith('.mp4'))
+      .map(async (f) => {
+        const full = join(dir, f);
+        const s = await stat(full).catch(() => null);
+        if (s && s.mtimeMs < cutoff) await unlink(full).catch(() => {});
+      })
+  );
+}
+
+sweepOrphanedTempFiles();
 
 const execAsync = promisify(exec);
 
@@ -176,6 +197,13 @@ export async function downloadVideo(url: string): Promise<string> {
       { timeout: 180_000 }
     );
     await access(outputPath);
+  }
+
+  // Guard against huge files before sending to Gemini
+  const { size } = await stat(outputPath);
+  if (size > MAX_VIDEO_BYTES) {
+    await unlink(outputPath).catch(() => {});
+    throw new Error(`Video is too large (${Math.round(size / 1024 / 1024)}MB). Maximum is ${MAX_VIDEO_BYTES / 1024 / 1024}MB.`);
   }
 
   return outputPath;
