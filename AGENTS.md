@@ -111,6 +111,21 @@ Each server deploys as its own Railway service. **Use nixpacks (no Dockerfile)**
 - **Railway service ID**: `e130c38c-091d-4cd5-acdf-052ec33cf631`
 - **Railway**: Root dir = `tolt/`, nixpacks, branch=main, watch_patterns=`tolt/**`
 
+### fly
+- **Purpose**: Fly.io infrastructure management — apps, machines (VMs), volumes, secrets, TLS certificates, IP assignments, organizations, platform regions
+- **Transport**: HTTP (Express + Streamable HTTP)
+- **Port**: 3800
+- **Auth (MCP)**: `MCP_API_KEY` via `Authorization: Bearer` or `x-api-key` header
+- **Fly Token**: `X-Fly-Token` header per request (or `FLY_API_TOKEN` env fallback)
+- **Endpoint**: `POST /mcp`
+- **Health**: `GET /health`
+- **URL**: `https://fly-mcp-production.up.railway.app`
+- **Tools (57 total)**: `list_apps`, `create_app`, `get_app`, `destroy_app`, `create_deploy_token`, `list_ip_assignments`, `assign_ip`, `remove_ip`, `list_machines`, `create_machine`, `get_machine`, `update_machine`, `delete_machine`, `start_machine`, `stop_machine`, `restart_machine`, `suspend_machine`, `cordon_machine`, `uncordon_machine`, `signal_machine`, `exec_machine`, `get_machine_events`, `get_machine_lease`, `acquire_machine_lease`, `release_machine_lease`, `get_machine_memory`, `update_machine_memory`, `reclaim_machine_memory`, `get_machine_metadata`, `set_machine_metadata`, `set_machine_metadata_key`, `delete_machine_metadata_key`, `get_machine_processes`, `get_machine_versions`, `wait_for_machine`, `list_volumes`, `create_volume`, `get_volume`, `update_volume`, `delete_volume`, `extend_volume`, `list_volume_snapshots`, `create_volume_snapshot`, `list_secrets`, `set_secrets`, `delete_secret`, `list_secret_keys`, `list_certificates`, `create_acme_certificate`, `create_custom_certificate`, `get_certificate`, `delete_certificate`, `check_certificate`, `list_org_machines`, `get_regions`, `get_placements`, `get_current_token`
+- **Env vars**: `MCP_API_KEY`, `FLY_API_TOKEN` (optional fallback), `PORT`
+- **Railway service ID**: `e1747943-28c6-4032-a270-05a40758c86a`
+- **Railway**: Root dir = `fly/`, nixpacks, branch=main, watch_patterns=`fly/**`
+- **API base**: `https://api.machines.dev/v1`
+
 ### video-mcp
 - **Purpose**: Analyze any public video (Loom, YouTube, Vimeo, etc.) with Gemini 2.0 Flash — comprehensive visual+audio analysis for engineering bug reports, feature demos, etc.
 - **Transport**: HTTP (Express + Streamable HTTP)
