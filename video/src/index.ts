@@ -2,7 +2,7 @@ import express, { NextFunction, Request, Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { unlink } from 'fs/promises';
+import { unlink, readFile } from 'fs/promises';
 import {
   downloadVideo,
   getVideoTitle,
@@ -110,25 +110,37 @@ function createMcpServer(geminiApiKey: string): McpServer {
         };
       }
 
-      const urls = frames.map((f) => {
-        registerScreenshot(f.id, f.path);
-        return { timestamp: formatDuration(f.timestampSeconds), seconds: f.timestampSeconds, url: `${PUBLIC_URL}/screenshots/${f.id}` };
+      // Build content: for each frame, emit a text label + the image inline as base64
+      // so the calling LLM can see the frames directly without any extra curl/download step.
+      type ContentItem =
+        | { type: 'text'; text: string }
+        | { type: 'image'; data: string; mimeType: string };
+
+      const content: ContentItem[] = [
+        { type: 'text', text: `## Screenshots (${frames.length} frames)\n` },
+      ];
+
+      for (const frame of frames) {
+        registerScreenshot(frame.id, frame.path);
+        const hostedUrl = `${PUBLIC_URL}/screenshots/${frame.id}`;
+        const imageBytes = await readFile(frame.path);
+        content.push({
+          type: 'text',
+          text: `**${formatDuration(frame.timestampSeconds)}** (${frame.timestampSeconds}s) — ${hostedUrl}`,
+        });
+        content.push({
+          type: 'image',
+          data: imageBytes.toString('base64'),
+          mimeType: 'image/jpeg',
+        });
+      }
+
+      content.push({
+        type: 'text',
+        text: '\n*Hosted URLs valid for 2 hours — pass to external vision APIs or download with curl.*',
       });
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: [
-              `## Screenshots (${urls.length} frames)`,
-              '',
-              ...urls.map((u) => `- **${u.timestamp}** (${u.seconds}s) — ${u.url}`),
-              '',
-              '*URLs are valid for 2 hours. Fetch with curl or pass to a vision-capable LLM.*',
-            ].join('\n'),
-          },
-        ],
-      };
+      return { content };
     }
   );
 
