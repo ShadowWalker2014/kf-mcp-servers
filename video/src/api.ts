@@ -4,6 +4,7 @@ import { unlink, access, stat, readdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
+import { createReadStream } from 'fs';
 import { ApifyClient } from 'apify-client';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { GoogleAIFileManager, FileState } from '@google/generative-ai/server';
@@ -267,3 +268,62 @@ export async function analyzeVideoFile(
 export async function cleanupTempFile(filePath: string): Promise<void> {
   await unlink(filePath).catch(() => {});
 }
+
+export async function sweepOrphanedScreenshots(): Promise<void> {
+  const dir = tmpdir();
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  const entries = await readdir(dir).catch(() => [] as string[]);
+  await Promise.all(
+    entries
+      .filter((f) => f.startsWith('screenshot-') && f.endsWith('.jpg'))
+      .map(async (f) => {
+        const full = join(dir, f);
+        const s = await stat(full).catch(() => null);
+        if (s && s.mtimeMs < cutoff) await unlink(full).catch(() => {});
+      })
+  );
+}
+
+export interface Screenshot {
+  id: string;
+  timestampSeconds: number;
+  path: string;
+}
+
+export async function extractScreenshots(
+  videoPath: string,
+  maxFrames: number = 8
+): Promise<Screenshot[]> {
+  const execAsync = promisify(exec);
+
+  // Get video duration
+  const { stdout } = await execAsync(
+    `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`,
+    { timeout: 15_000 }
+  );
+  const duration = parseFloat(stdout.trim());
+  if (!duration || duration < 1) return [];
+
+  const screenshots: Screenshot[] = [];
+  const interval = duration / (maxFrames + 1);
+
+  await Promise.all(
+    Array.from({ length: maxFrames }, async (_, i) => {
+      const ts = Math.round(interval * (i + 1));
+      if (ts >= duration) return;
+      const id = randomUUID();
+      const outPath = join(tmpdir(), `screenshot-${id}.jpg`);
+      await execAsync(
+        `ffmpeg -ss ${ts} -i "${videoPath}" -vframes 1 -q:v 2 -y "${outPath}"`,
+        { timeout: 15_000 }
+      ).catch(() => {});
+      const exists = await access(outPath).then(() => true).catch(() => false);
+      if (exists) screenshots.push({ id, timestampSeconds: ts, path: outPath });
+    })
+  );
+
+  // Sort by timestamp
+  return screenshots.sort((a, b) => a.timestampSeconds - b.timestampSeconds);
+}
+
+export { createReadStream };
