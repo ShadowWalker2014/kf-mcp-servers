@@ -290,27 +290,12 @@ export interface Screenshot {
   path: string;
 }
 
-export async function extractScreenshots(
+export async function extractFramesAtTimestamps(
   videoPath: string,
-  maxFrames: number = 8
+  timestamps: number[]
 ): Promise<Screenshot[]> {
-  const execAsync = promisify(exec);
-
-  // Get video duration
-  const { stdout } = await execAsync(
-    `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`,
-    { timeout: 15_000 }
-  );
-  const duration = parseFloat(stdout.trim());
-  if (!duration || duration < 1) return [];
-
-  const screenshots: Screenshot[] = [];
-  const interval = duration / (maxFrames + 1);
-
-  await Promise.all(
-    Array.from({ length: maxFrames }, async (_, i) => {
-      const ts = Math.round(interval * (i + 1));
-      if (ts >= duration) return;
+  const results = await Promise.all(
+    timestamps.map(async (ts) => {
       const id = randomUUID();
       const outPath = join(tmpdir(), `screenshot-${id}.jpg`);
       await execAsync(
@@ -318,12 +303,11 @@ export async function extractScreenshots(
         { timeout: 15_000 }
       ).catch(() => {});
       const exists = await access(outPath).then(() => true).catch(() => false);
-      if (exists) screenshots.push({ id, timestampSeconds: ts, path: outPath });
+      if (!exists) return null;
+      return { id, timestampSeconds: ts, path: outPath } satisfies Screenshot;
     })
   );
-
-  // Sort by timestamp
-  return screenshots.sort((a, b) => a.timestampSeconds - b.timestampSeconds);
+  return (results.filter(Boolean) as Screenshot[]).sort((a, b) => a.timestampSeconds - b.timestampSeconds);
 }
 
 export { createReadStream };

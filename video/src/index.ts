@@ -8,7 +8,7 @@ import {
   getVideoTitle,
   analyzeVideoFile,
   cleanupTempFile,
-  extractScreenshots,
+  extractFramesAtTimestamps,
   sweepOrphanedScreenshots,
   createReadStream,
 } from './api.js';
@@ -17,9 +17,31 @@ const MCP_API_KEY = process.env.MCP_API_KEY;
 const PORT = parseInt(process.env.PORT || '3600');
 const PUBLIC_URL = (process.env.PUBLIC_URL || 'https://video-mcp-production-2dc2.up.railway.app').replace(/\/$/, '');
 
-// Registry: screenshot id -> { path, expires }
-const screenshotRegistry = new Map<string, { path: string; expires: number }>();
+// Video cache: url -> { path, expires } — keeps downloaded video on disk for 30 min
+// so get_screenshots doesn't need to re-download after analyze_video
+const videoCache = new Map<string, { path: string; expires: number }>();
+const VIDEO_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
+async function getOrDownloadVideo(url: string): Promise<string> {
+  const cached = videoCache.get(url);
+  if (cached && Date.now() < cached.expires) return cached.path;
+  const path = await downloadVideo(url);
+  videoCache.set(url, { path, expires: Date.now() + VIDEO_CACHE_TTL_MS });
+  return path;
+}
+
+function purgeExpiredVideos(): void {
+  const now = Date.now();
+  for (const [url, entry] of videoCache) {
+    if (now > entry.expires) {
+      cleanupTempFile(entry.path);
+      videoCache.delete(url);
+    }
+  }
+}
+
+// Screenshot registry: id -> { path, expires }
+const screenshotRegistry = new Map<string, { path: string; expires: number }>();
 const SCREENSHOT_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 function registerScreenshot(id: string, path: string): void {
@@ -43,45 +65,67 @@ function createMcpServer(geminiApiKey: string): McpServer {
 
   server.tool(
     'analyze_video',
-    'Download any public video (Loom, YouTube, Vimeo, etc.) and analyze it with Gemini AI. Returns a comprehensive report covering visual content, audio narration, sequence of actions, key technical details, and engineering action items, plus hosted screenshot URLs for key frames. Best for screen recordings, bug reports, and feature demos. Takes 1-3 minutes depending on video length.',
+    'Download any public video (Loom, YouTube, Vimeo, etc.) and analyze it with Gemini AI. Returns a comprehensive text report with timestamps covering visual content, audio narration, sequence of actions, key technical details, and engineering action items. The video is cached for 30 minutes — call get_screenshots next with specific timestamps from this report to get hosted image URLs. Takes 1-3 minutes depending on video length.',
     {
       url: z.string().url().describe('Public video URL — Loom share link, YouTube, Vimeo, or any yt-dlp-supported URL'),
       prompt: z.string().optional().describe('Custom analysis prompt. Leave empty for the default comprehensive technical analysis.'),
-      screenshots: z.boolean().optional().default(true).describe('Extract and return hosted screenshot URLs for evenly-spaced key frames (default: true). URLs are valid for 2 hours.'),
-      screenshot_count: z.number().int().min(1).max(20).optional().default(8).describe('Number of screenshots to extract (default: 8, max: 20).'),
     },
-    async ({ url, prompt, screenshots, screenshot_count }) => {
+    async ({ url, prompt }) => {
+      purgeExpiredVideos();
       purgeExpiredScreenshots();
 
       const title = await getVideoTitle(url).catch(() => url);
-      const videoPath = await downloadVideo(url);
+      const videoPath = await getOrDownloadVideo(url);
 
-      let screenshotUrls: Array<{ timestamp_seconds: number; url: string }> = [];
-
-      if (screenshots !== false) {
-        const frames = await extractScreenshots(videoPath, screenshot_count ?? 8).catch(() => []);
-        for (const frame of frames) {
-          registerScreenshot(frame.id, frame.path);
-          screenshotUrls.push({
-            timestamp_seconds: frame.timestampSeconds,
-            url: `${PUBLIC_URL}/screenshots/${frame.id}`,
-          });
-        }
-      }
-
-      const analysis = await analyzeVideoFile(geminiApiKey, videoPath, prompt).finally(() => {
-        cleanupTempFile(videoPath);
-      });
-
-      const screenshotsSection = screenshotUrls.length > 0
-        ? `\n\n## Screenshots\n\n${screenshotUrls.map(s => `- **${formatDuration(s.timestamp_seconds)}** — ${s.url}`).join('\n')}\n\n*Screenshots are hosted for 2 hours. Fetch with curl or pass URLs to a vision-capable LLM.*`
-        : '';
+      const analysis = await analyzeVideoFile(geminiApiKey, videoPath, prompt);
 
       return {
         content: [
           {
             type: 'text',
-            text: `# Video Analysis: ${title}\n\n**Source:** ${url}\n\n---\n\n${analysis}${screenshotsSection}`,
+            text: `# Video Analysis: ${title}\n\n**Source:** ${url}\n\n---\n\n${analysis}\n\n---\n\n*Video cached for 30 minutes. Call \`get_screenshots\` with this URL and specific timestamps to get hosted image URLs.*`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    'get_screenshots',
+    'Extract screenshots from a video at specific timestamps and return hosted URLs valid for 2 hours. Call analyze_video first to get the text analysis with timestamps, then use this tool to grab images at the moments that matter. The video is cached for 30 minutes after analyze_video so this is fast.',
+    {
+      url: z.string().url().describe('Same video URL passed to analyze_video'),
+      timestamps: z.array(z.number().min(0)).min(1).max(20).describe('Timestamps in seconds to capture (e.g. [10, 45, 90]). Max 20.'),
+    },
+    async ({ url, timestamps }) => {
+      purgeExpiredVideos();
+      purgeExpiredScreenshots();
+
+      const videoPath = await getOrDownloadVideo(url);
+      const frames = await extractFramesAtTimestamps(videoPath, timestamps);
+
+      if (frames.length === 0) {
+        return {
+          content: [{ type: 'text', text: 'No screenshots could be extracted. Check that the timestamps are within the video duration.' }],
+        };
+      }
+
+      const urls = frames.map((f) => {
+        registerScreenshot(f.id, f.path);
+        return { timestamp: formatDuration(f.timestampSeconds), seconds: f.timestampSeconds, url: `${PUBLIC_URL}/screenshots/${f.id}` };
+      });
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: [
+              `## Screenshots (${urls.length} frames)`,
+              '',
+              ...urls.map((u) => `- **${u.timestamp}** (${u.seconds}s) — ${u.url}`),
+              '',
+              '*URLs are valid for 2 hours. Fetch with curl or pass to a vision-capable LLM.*',
+            ].join('\n'),
           },
         ],
       };
