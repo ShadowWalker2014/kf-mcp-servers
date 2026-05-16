@@ -241,6 +241,20 @@ app.post('/mcp', authenticate, async (req: Request, res: Response) => {
     normalized = `application/json, ${normalized}`;
   }
   req.headers.accept = normalized;
+  // The MCP SDK uses Hono's adapter which reads from req.rawHeaders, so we
+  // have to patch the raw array too. rawHeaders is [name, value, name, value, ...].
+  const raw = req.rawHeaders;
+  let found = false;
+  for (let i = 0; i < raw.length; i += 2) {
+    if (raw[i] && raw[i]!.toLowerCase() === 'accept') {
+      raw[i + 1] = normalized;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    raw.push('Accept', normalized);
+  }
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
