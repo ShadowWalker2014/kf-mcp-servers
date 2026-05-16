@@ -229,6 +229,17 @@ app.get('/screenshots/:id', (req: Request, res: Response) => {
 });
 
 app.post('/mcp', authenticate, async (req: Request, res: Response) => {
+  // ChatGPT Apps and some other MCP clients only send `Accept: application/json`,
+  // but the StreamableHTTP transport strictly requires both `application/json` AND
+  // `text/event-stream` per spec. Normalize so we accept either client style.
+  const accept = (req.headers.accept || '').toString();
+  if (!accept.includes('text/event-stream')) {
+    req.headers.accept = accept ? `${accept}, text/event-stream` : 'application/json, text/event-stream';
+  }
+  if (!req.headers.accept.includes('application/json')) {
+    req.headers.accept = `application/json, ${req.headers.accept}`;
+  }
+
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
