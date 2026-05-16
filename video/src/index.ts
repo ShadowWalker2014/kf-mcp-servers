@@ -60,7 +60,7 @@ function purgeExpiredScreenshots(): void {
 
 sweepOrphanedScreenshots();
 
-function createMcpServer(geminiApiKey: string): McpServer {
+function createMcpServer(getGeminiKey: () => string | null): McpServer {
   const server = new McpServer({ name: 'video-mcp', version: '1.0.0' });
 
   server.tool(
@@ -71,6 +71,14 @@ function createMcpServer(geminiApiKey: string): McpServer {
       prompt: z.string().optional().describe('Custom analysis prompt. Leave empty for the default comprehensive technical analysis.'),
     },
     async ({ url, prompt }) => {
+      const geminiApiKey = getGeminiKey();
+      if (!geminiApiKey) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: 'No Gemini API key provided. Pass X-Gemini-Api-Key header on the MCP request or set GEMINI_API_KEY env var on the server.' }],
+        };
+      }
+
       purgeExpiredVideos();
       purgeExpiredScreenshots();
 
@@ -221,19 +229,13 @@ app.get('/screenshots/:id', (req: Request, res: Response) => {
 });
 
 app.post('/mcp', authenticate, async (req: Request, res: Response) => {
-  const geminiApiKey = resolveGeminiKey(req);
-  if (!geminiApiKey) {
-    res.status(400).json({ error: 'No Gemini API key provided. Pass X-Gemini-Api-Key header or set GEMINI_API_KEY env var.' });
-    return;
-  }
-
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
   });
 
   res.on('close', () => transport.close());
-  const server = createMcpServer(geminiApiKey);
+  const server = createMcpServer(() => resolveGeminiKey(req));
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
 });
