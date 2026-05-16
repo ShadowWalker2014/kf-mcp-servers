@@ -233,12 +233,14 @@ app.post('/mcp', authenticate, async (req: Request, res: Response) => {
   // but the StreamableHTTP transport strictly requires both `application/json` AND
   // `text/event-stream` per spec. Normalize so we accept either client style.
   const accept = (req.headers.accept || '').toString();
-  if (!accept.includes('text/event-stream')) {
-    req.headers.accept = accept ? `${accept}, text/event-stream` : 'application/json, text/event-stream';
+  let normalized = accept;
+  if (!normalized.includes('text/event-stream')) {
+    normalized = normalized ? `${normalized}, text/event-stream` : 'application/json, text/event-stream';
   }
-  if (!req.headers.accept.includes('application/json')) {
-    req.headers.accept = `application/json, ${req.headers.accept}`;
+  if (!normalized.includes('application/json')) {
+    normalized = `application/json, ${normalized}`;
   }
+  req.headers.accept = normalized;
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
