@@ -13,34 +13,54 @@
 // State is in-process memory — fine for a single-instance deployment. Restarting
 // the server invalidates issued tokens; users re-run the OAuth flow.
 
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import express, { Express, Request, Response } from 'express';
 
-interface OAuthClient {
-  client_id: string;
-  redirect_uris: string[];
-  client_name?: string;
-  created_at: number;
+// ─── Stateless encrypted-token design ─────────────────────────────────────────
+// Railway restarts and horizontal replicas mean in-memory token state is
+// unreliable. Instead we encrypt every issued credential (auth code,
+// access token, client_id) with a server-side key. The token IS the state.
+//
+// Format for all encrypted blobs: base64url( iv(12) || ciphertext || tag(16) )
+// Plaintext is a JSON object whose `t` field tags the type.
+
+const SIGNING_KEY: Buffer = (() => {
+  const explicit = process.env.OAUTH_SIGNING_KEY || process.env.MCP_API_KEY;
+  if (explicit) return createHash('sha256').update(explicit).digest();
+  // Fallback: random per-process key. Tokens won't survive a restart in this
+  // mode — set OAUTH_SIGNING_KEY in the environment for durability.
+  console.warn('[oauth] No OAUTH_SIGNING_KEY/MCP_API_KEY set; using ephemeral key — tokens will not survive restarts.');
+  return randomBytes(32);
+})();
+
+function seal(payload: object): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', SIGNING_KEY, iv);
+  const pt = Buffer.from(JSON.stringify(payload), 'utf8');
+  const ct = Buffer.concat([cipher.update(pt), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, ct, tag]).toString('base64url');
 }
 
-interface AuthCode {
-  client_id: string;
-  redirect_uri: string;
-  code_challenge: string;
-  code_challenge_method: 'S256' | 'plain';
-  railway_token: string;
-  expires_at: number;
+function unseal<T = any>(token: string): T | null {
+  try {
+    const buf = Buffer.from(token, 'base64url');
+    if (buf.length < 12 + 16) return null;
+    const iv = buf.subarray(0, 12);
+    const tag = buf.subarray(buf.length - 16);
+    const ct = buf.subarray(12, buf.length - 16);
+    const decipher = createDecipheriv('aes-256-gcm', SIGNING_KEY, iv);
+    decipher.setAuthTag(tag);
+    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+    return JSON.parse(pt.toString('utf8')) as T;
+  } catch {
+    return null;
+  }
 }
 
-interface AccessToken {
-  railway_token: string;
-  client_id: string;
-  expires_at: number;
-}
-
-const clients = new Map<string, OAuthClient>();
-const authCodes = new Map<string, AuthCode>();
-const accessTokens = new Map<string, AccessToken>();
+interface SealedClient { t: 'c'; cid: string; uris: string[]; name?: string; iat: number; }
+interface SealedAuthCode { t: 'ac'; cid: string; uri: string; cc: string; ccm: 'S256' | 'plain'; rt: string; exp: number; }
+interface SealedAccessToken { t: 'at'; cid: string; rt: string; exp: number; }
 
 function randomId(bytes = 24): string {
   return randomBytes(bytes).toString('base64url');
@@ -59,13 +79,10 @@ export function getBaseUrl(req: Request): string {
 
 /** Returns the Railway token bound to an issued access token, or null. */
 export function lookupAccessToken(token: string): string | null {
-  const entry = accessTokens.get(token);
-  if (!entry) return null;
-  if (entry.expires_at < Date.now()) {
-    accessTokens.delete(token);
-    return null;
-  }
-  return entry.railway_token;
+  const entry = unseal<SealedAccessToken>(token);
+  if (!entry || entry.t !== 'at') return null;
+  if (entry.exp < Date.now()) return null;
+  return entry.rt;
 }
 
 function escapeHtml(s: string): string {
@@ -172,8 +189,11 @@ export function mountOAuth(app: Express): void {
       res.status(400).json({ error: 'invalid_redirect_uri', error_description: 'redirect_uris required' });
       return;
     }
-    const client_id = randomId(16);
-    clients.set(client_id, { client_id, redirect_uris, client_name, created_at: Date.now() });
+    const cid = randomId(16);
+    // client_id is itself a sealed envelope so we can validate redirect_uris
+    // statelessly on /authorize without needing a server-side clients table.
+    const sealed: SealedClient = { t: 'c', cid, uris: redirect_uris, name: client_name, iat: Date.now() };
+    const client_id = seal(sealed);
     res.status(201).json({
       client_id,
       client_id_issued_at: Math.floor(Date.now() / 1000),
@@ -185,6 +205,13 @@ export function mountOAuth(app: Express): void {
       scope: 'mcp',
     });
   });
+
+  function validateClient(client_id: string, redirect_uri: string): SealedClient | null {
+    const c = unseal<SealedClient>(client_id);
+    if (!c || c.t !== 'c') return null;
+    if (c.uris.length && !c.uris.includes(redirect_uri)) return null;
+    return c;
+  }
 
   // ─── /authorize GET → consent page ─────────────────────────────────────
   app.get('/authorize', (req: Request, res: Response) => {
@@ -198,13 +225,9 @@ export function mountOAuth(app: Express): void {
       res.status(400).type('text/plain').send('Unsupported response_type — only "code" is supported');
       return;
     }
-    const client = clients.get(client_id);
+    const client = validateClient(client_id, redirect_uri);
     if (!client) {
-      res.status(400).type('text/plain').send('Unknown client_id — re-run dynamic client registration');
-      return;
-    }
-    if (client.redirect_uris.length && !client.redirect_uris.includes(redirect_uri)) {
-      res.status(400).type('text/plain').send('redirect_uri not registered for this client');
+      res.status(400).type('text/plain').send('Unknown or invalid client_id / redirect_uri — re-run dynamic client registration');
       return;
     }
     const method = code_challenge_method === 'S256' || code_challenge_method === 'plain'
@@ -217,7 +240,7 @@ export function mountOAuth(app: Express): void {
       code_challenge: code_challenge ?? '',
       code_challenge_method: method,
       scope: scope ?? 'mcp',
-      client_name: client.client_name ?? 'MCP Client',
+      client_name: client.name ?? 'MCP Client',
     }));
   });
 
@@ -229,22 +252,22 @@ export function mountOAuth(app: Express): void {
       res.status(400).type('text/plain').send('Missing required fields');
       return;
     }
-    const client = clients.get(client_id);
-    if (!client) { res.status(400).type('text/plain').send('Unknown client_id'); return; }
-    if (client.redirect_uris.length && !client.redirect_uris.includes(redirect_uri)) {
-      res.status(400).type('text/plain').send('redirect_uri not registered');
+    const client = validateClient(client_id, redirect_uri);
+    if (!client) {
+      res.status(400).type('text/plain').send('Unknown or invalid client_id / redirect_uri');
       return;
     }
     const method: 'S256' | 'plain' = code_challenge_method === 'S256' ? 'S256' : 'plain';
-    const code = randomId(24);
-    authCodes.set(code, {
-      client_id,
-      redirect_uri,
-      code_challenge: code_challenge ?? '',
-      code_challenge_method: method,
-      railway_token: railway_token.trim(),
-      expires_at: Date.now() + 5 * 60_000,
-    });
+    const sealedCode: SealedAuthCode = {
+      t: 'ac',
+      cid: client.cid,
+      uri: redirect_uri,
+      cc: code_challenge ?? '',
+      ccm: method,
+      rt: railway_token.trim(),
+      exp: Date.now() + 5 * 60_000,
+    };
+    const code = seal(sealedCode);
     const url = new URL(redirect_uri);
     url.searchParams.set('code', code);
     if (state) url.searchParams.set('state', state);
@@ -262,39 +285,46 @@ export function mountOAuth(app: Express): void {
     }
     const { code, redirect_uri, client_id, code_verifier } = b;
     if (!code) { res.status(400).json({ error: 'invalid_request', error_description: 'missing code' }); return; }
-    const entry = authCodes.get(code);
-    if (!entry) { res.status(400).json({ error: 'invalid_grant' }); return; }
-    authCodes.delete(code); // one-time use regardless of outcome
-    if (entry.expires_at < Date.now()) {
+    const entry = unseal<SealedAuthCode>(code);
+    if (!entry || entry.t !== 'ac') {
+      res.status(400).json({ error: 'invalid_grant', error_description: 'unrecognized code' });
+      return;
+    }
+    if (entry.exp < Date.now()) {
       res.status(400).json({ error: 'invalid_grant', error_description: 'code expired' }); return;
     }
-    if (client_id && entry.client_id !== client_id) {
-      res.status(400).json({ error: 'invalid_grant', error_description: 'client_id mismatch' }); return;
+    if (client_id) {
+      const c = unseal<SealedClient>(client_id);
+      if (!c || c.t !== 'c' || c.cid !== entry.cid) {
+        res.status(400).json({ error: 'invalid_grant', error_description: 'client_id mismatch' });
+        return;
+      }
     }
-    if (redirect_uri && entry.redirect_uri !== redirect_uri) {
+    if (redirect_uri && entry.uri !== redirect_uri) {
       res.status(400).json({ error: 'invalid_grant', error_description: 'redirect_uri mismatch' }); return;
     }
     // PKCE
-    if (entry.code_challenge) {
+    if (entry.cc) {
       if (!code_verifier) {
         res.status(400).json({ error: 'invalid_grant', error_description: 'missing code_verifier' });
         return;
       }
-      const computed = entry.code_challenge_method === 'S256'
+      const computed = entry.ccm === 'S256'
         ? createHash('sha256').update(code_verifier).digest('base64url')
         : code_verifier;
-      if (computed !== entry.code_challenge) {
+      if (computed !== entry.cc) {
         res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
         return;
       }
     }
-    const access_token = randomId(32);
     const expires_in = 60 * 60 * 24 * 30; // 30 days
-    accessTokens.set(access_token, {
-      railway_token: entry.railway_token,
-      client_id: entry.client_id,
-      expires_at: Date.now() + expires_in * 1000,
-    });
+    const sealedAt: SealedAccessToken = {
+      t: 'at',
+      cid: entry.cid,
+      rt: entry.rt,
+      exp: Date.now() + expires_in * 1000,
+    };
+    const access_token = seal(sealedAt);
     res.json({
       access_token,
       token_type: 'Bearer',
