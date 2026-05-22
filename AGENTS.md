@@ -4,6 +4,8 @@ Central memory for all MCP servers in this repo. Update when adding/changing ser
 ## How to build a new MCP server
 Follow the skill at `.cursor/skills/build-http-mcp/SKILL.md` — it contains the full template, deploy steps, and checklist.
 
+For servers that need **per-user OAuth** (Claude Code / Claude Desktop / other spec-compliant MCP clients), bolt OAuth 2.0 (DCR + PKCE) on top using `.cursor/skills/add-mcp-oauth/SKILL.md`. Includes drop-in `src/oauth.ts` template with stateless AES-GCM-sealed tokens. Reference impl: `railway/`.
+
 ## Repo Structure
 Each MCP server lives in its own subfolder. Each is deployed as an independent Railway service pointing to this git repo with a subfolder root.
 
