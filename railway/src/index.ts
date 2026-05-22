@@ -1664,6 +1664,24 @@ function authenticateAndResolveToken(req: Request, res: Response): string | null
 
 function challenge401(req: Request, res: Response, description: string) {
   const base = getBaseUrl(req);
+  // Diagnostic: log the request shape so we can see exactly what the client sent.
+  const authHeader = req.headers.authorization;
+  const bearerPreview = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice(7, 7 + 12) + '…(' + (authHeader.length - 7) + ' chars)'
+    : authHeader ? '(non-Bearer)' : '(none)';
+  console.log(JSON.stringify({
+    evt: 'auth_challenge',
+    method: req.method,
+    path: req.path,
+    description,
+    bearer: bearerPreview,
+    has_x_api_key: !!req.headers['x-api-key'],
+    has_x_railway_token: !!req.headers['x-railway-token'],
+    user_agent: req.headers['user-agent'],
+    forwarded_proto: req.headers['x-forwarded-proto'],
+    forwarded_host: req.headers['x-forwarded-host'],
+    body_method: (req.body as any)?.method,
+  }));
   res.set(
     'WWW-Authenticate',
     `Bearer realm="railway-mcp", error="invalid_token", error_description="${description}", resource_metadata="${base}/.well-known/oauth-protected-resource"`
@@ -1679,6 +1697,20 @@ app.use(express.json());
 
 // OAuth endpoints (must be mounted before /mcp 401 challenge points clients here).
 mountOAuth(app);
+
+// Diagnostic logger — every request, minimal noise.
+app.use((req, _res, next) => {
+  if (req.path === '/health') return next();
+  console.log(JSON.stringify({
+    evt: 'req',
+    method: req.method,
+    path: req.path,
+    ua: req.headers['user-agent'],
+    has_auth: !!req.headers.authorization,
+    body_method: (req.body as any)?.method,
+  }));
+  next();
+});
 
 app.get('/health', (_req, res) => res.json({
   status: 'ok', server: 'railway-mcp', version: '2.0.0',
