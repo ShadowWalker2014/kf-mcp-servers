@@ -2,6 +2,7 @@ import express, { NextFunction, Request, Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
+import { mountOAuth, lookupAccessToken, getBaseUrl } from './oauth.js';
 import {
   getMe, listProjects, getProject, createProject, updateProject, deleteProject,
   listProjectMembers, inviteProjectUser, removeProjectMember, updateProjectMember,
@@ -1611,39 +1612,84 @@ function createMcpServer(railwayToken: string): McpServer {
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
 
-function authenticate(req: Request, res: Response, next: NextFunction) {
-  if (!MCP_API_KEY) return next();
-  const key = req.headers.authorization?.startsWith('Bearer ')
-    ? req.headers.authorization.slice(7)
-    : (req.headers['x-api-key'] as string | undefined);
-  if (!key) { res.status(401).json({ error: 'Missing API key' }); return; }
-  if (key !== MCP_API_KEY) { res.status(403).json({ error: 'Invalid API key' }); return; }
-  next();
+// Auth resolution. The /mcp endpoint accepts three credential modes, in order:
+//   1. OAuth-issued access token (Bearer) — minted via /authorize, bound to a Railway token.
+//   2. Legacy MCP_API_KEY (Bearer or x-api-key) — paired with a Railway token from env or X-Railway-Token.
+//   3. Open mode (MCP_API_KEY unset) — Railway token from env or X-Railway-Token header.
+//
+// On failure we return 401 with WWW-Authenticate pointing at the protected-resource
+// metadata, which is what triggers Claude Code's OAuth discovery + DCR + PKCE flow.
+function authenticateAndResolveToken(req: Request, res: Response): string | null {
+  const bearer = req.headers.authorization?.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7).trim()
+    : undefined;
+  const xApiKey = req.headers['x-api-key'] as string | undefined;
+  const xRailway = req.headers['x-railway-token'] as string | undefined;
+
+  // 1. OAuth-issued access token?
+  if (bearer) {
+    const oauthRailwayToken = lookupAccessToken(bearer);
+    if (oauthRailwayToken) return oauthRailwayToken;
+  }
+
+  // 2. Legacy MCP_API_KEY gate.
+  if (MCP_API_KEY) {
+    const presented = bearer ?? xApiKey;
+    if (!presented) {
+      challenge401(req, res, 'missing credentials');
+      return null;
+    }
+    if (presented !== MCP_API_KEY) {
+      // Don't 403 — return 401 with WWW-Authenticate so MCP clients fall into
+      // the OAuth discovery flow instead of giving up.
+      challenge401(req, res, 'invalid token');
+      return null;
+    }
+    const railwayToken = xRailway ?? process.env.RAILWAY_TOKEN;
+    if (!railwayToken) {
+      res.status(400).json({ error: 'No Railway token. Pass X-Railway-Token header or set RAILWAY_TOKEN env.' });
+      return null;
+    }
+    return railwayToken;
+  }
+
+  // 3. Open mode — env or header only.
+  const railwayToken = xRailway ?? process.env.RAILWAY_TOKEN;
+  if (!railwayToken) {
+    challenge401(req, res, 'no credentials');
+    return null;
+  }
+  return railwayToken;
 }
 
-function resolveRailwayToken(req: Request): string | null {
-  return (req.headers['x-railway-token'] as string | undefined)
-    ?? process.env.RAILWAY_TOKEN
-    ?? null;
+function challenge401(req: Request, res: Response, description: string) {
+  const base = getBaseUrl(req);
+  res.set(
+    'WWW-Authenticate',
+    `Bearer realm="railway-mcp", error="invalid_token", error_description="${description}", resource_metadata="${base}/.well-known/oauth-protected-resource"`
+  );
+  res.status(401).json({ error: 'unauthorized', error_description: description });
 }
 
 // ─── Express app ─────────────────────────────────────────────────────────────
 
 const app = express();
+app.set('trust proxy', true); // Railway/any reverse proxy sets x-forwarded-* — required for correct base URLs
 app.use(express.json());
+
+// OAuth endpoints (must be mounted before /mcp 401 challenge points clients here).
+mountOAuth(app);
 
 app.get('/health', (_req, res) => res.json({
   status: 'ok', server: 'railway-mcp', version: '2.0.0',
   auth: MCP_API_KEY ? 'enabled' : 'disabled',
-  token_mode: process.env.RAILWAY_TOKEN ? 'env (RAILWAY_TOKEN)' : 'per-request (X-Railway-Token header)',
+  oauth: 'enabled',
+  token_mode: process.env.RAILWAY_TOKEN ? 'env (RAILWAY_TOKEN)' : 'per-request (OAuth or X-Railway-Token header)',
 }));
 
-app.post('/mcp', authenticate, async (req: Request, res: Response) => {
-  const railwayToken = resolveRailwayToken(req);
-  if (!railwayToken) {
-    res.status(400).json({ error: 'No Railway token. Set RAILWAY_TOKEN env or pass X-Railway-Token header.' });
-    return;
-  }
+app.post('/mcp', async (req: Request, res: Response) => {
+  const railwayToken = authenticateAndResolveToken(req, res);
+  if (!railwayToken) return; // response already sent
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
@@ -1657,8 +1703,15 @@ app.post('/mcp', authenticate, async (req: Request, res: Response) => {
   await transport.handleRequest(req, res, req.body);
 });
 
-app.get('/mcp', authenticate, (_req, res) => res.status(405).json({ error: 'Use POST /mcp' }));
-app.delete('/mcp', authenticate, (_req, res) => res.status(405).json({ error: 'Stateless mode' }));
+app.get('/mcp', (req, res) => {
+  // MCP clients often probe GET first; return 401 so they discover OAuth metadata.
+  if (!authenticateAndResolveToken(req, res)) return;
+  res.status(405).json({ error: 'Use POST /mcp' });
+});
+app.delete('/mcp', (req, res) => {
+  if (!authenticateAndResolveToken(req, res)) return;
+  res.status(405).json({ error: 'Stateless mode' });
+});
 
 app.listen(PORT, () => {
   console.log(`railway-mcp running on http://0.0.0.0:${PORT}`);
