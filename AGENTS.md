@@ -21,14 +21,18 @@ kf-mcp-servers/
 - **Purpose**: HTTP MCP wrapper for any PostgreSQL database — same tools/resources as `@modelcontextprotocol/server-postgres`
 - **Transport**: HTTP (Express + Streamable HTTP)
 - **Port**: 3200
-- **Auth**: `MCP_API_KEY` via `Authorization: Bearer` or `x-api-key` header
+- **Auth — two independent paths, both live on the one deployed instance**:
+  - **Legacy static key** (existing, unchanged): `MCP_API_KEY` via `Authorization: Bearer` or `x-api-key` header, database chosen per-request via `X-Database-URL` header (or `DATABASE_URL` env as a fallback if no header is sent). This is what every current caller uses — multiple local projects each point their own `.mcp.json` at this one server with their own `X-Database-URL`. **`DATABASE_URL` is deliberately NOT set on the live service** — it stays multi-DB.
+  - **OAuth 2.0 (DCR + PKCE)**, added for Claude Code / claude.ai connectors, which refuse to call a server that only offers a static Bearer gate (`Cannot POST /register`). Pattern: `.cursor/skills/add-mcp-oauth/SKILL.md`. Unlike the Railway reference implementation, this consent screen does **not** ask the user to paste a credential — the connecting app requests access to one fixed target (PG2 analytics) and the operator clicks Approve; the connection string is bound server-side from `OAUTH_DATABASE_URL`, never typed into the browser. `OAUTH_DATABASE_URL` is a **separate env var from `DATABASE_URL`** specifically so the OAuth path can never affect what the legacy per-header callers connect to.
+  - Precedence per request: valid OAuth Bearer token → legacy `MCP_API_KEY` check → (only if `MCP_ALLOW_OPEN=1` is explicitly set) unauthenticated. There is **no silent open-mode fallback** anymore — with OAuth mounted, a missing/absent `MCP_API_KEY` no longer means "unauthenticated requests pass"; it always 401s with a `WWW-Authenticate` challenge unless `MCP_ALLOW_OPEN=1` is set.
+  - Optional extra gate on the OAuth consent page: set `CONSENT_SECRET` to require a shared passphrase before Approve (unset by default).
 - **Endpoint**: `POST /mcp`
 - **Health**: `GET /health`
 - **Tools**: `query` (read-only SQL, enforced via BEGIN READ ONLY / ROLLBACK)
 - **Resources**: one per table — `postgres://{host}/{table}/schema` (DDL schema text)
-- **Env vars**: `DATABASE_URL` (required), `MCP_API_KEY`, `PORT`
-- **Railway**: Deploy one instance per DB, root dir = `postgres/`, set `DATABASE_URL` per service
-- **Replaces**: stdio `@modelcontextprotocol/server-postgres` for pg2, creator-crm, etc.
+- **Env vars**: `MCP_API_KEY` (legacy auth), `DATABASE_URL` (legacy single-DB fallback only — leave unset for a shared multi-DB deployment like the live one), `OAUTH_SIGNING_KEY` (required for OAuth tokens to survive restarts/replicas — falls back to `MCP_API_KEY` if unset), `OAUTH_DATABASE_URL` (the fixed target the OAuth consent screen grants access to), `CONSENT_SECRET` (optional), `BASE_URL` (optional, overrides auto-detected base URL), `PORT`
+- **Railway**: One instance today (`pg2-postgres`, root dir = `postgres/`), serving PG2 analytics to every local project via the legacy header path, plus OAuth for Claude Code / connectors bound to that same PG2 target. For a genuinely different database needing its own OAuth-consented access, deploy this same code as a **new** Railway service with its own domain and its own `OAUTH_DATABASE_URL` — don't add a dropdown to this one. One compromised OAuth credential should only ever expose one database, not several sharing one consent screen.
+- **Used by**: pg2 (legacy header path, all local projects), and now Claude Code Cloud routines (`auto-engineer`'s `stripe-dispute-handler` skill) via OAuth
 
 ### datafast
 - **Purpose**: DataFast analytics — all data queries, realtime, goal/payment tracking, visitor profiles

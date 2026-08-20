@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Pool } from 'pg';
 import { z } from 'zod';
+import { mountOAuth, lookupAccessToken, getBaseUrl } from './oauth.js';
 
 const MCP_API_KEY = process.env.MCP_API_KEY;
 const PORT = parseInt(process.env.PORT || '3200');
@@ -73,7 +74,7 @@ async function getTableSchema(pool: Pool, tableName: string): Promise<string> {
 // ─── MCP server factory ────────────────────────────────────────────────────────
 
 async function createMcpServer(pool: Pool, databaseUrl: string): Promise<McpServer> {
-  const server = new McpServer({ name: 'postgres', version: '1.0.0' });
+  const server = new McpServer({ name: 'postgres', version: '1.1.0' });
 
   server.tool(
     'query',
@@ -116,50 +117,84 @@ async function createMcpServer(pool: Pool, databaseUrl: string): Promise<McpServ
 }
 
 // ─── Auth + DB URL resolution ─────────────────────────────────────────────────
+//
+// Three ways in, tried in order — see .cursor/skills/add-mcp-oauth/SKILL.md:
+//   1. OAuth access token (Authorization: Bearer <sealed-token>) — the token
+//      itself encodes the database URL, bound at /authorize. This is the path
+//      Claude Code / claude.ai connectors use; it's what makes DCR+PKCE work.
+//   2. Legacy static key: Authorization/x-api-key === MCP_API_KEY, DB URL from
+//      X-Database-URL header or DATABASE_URL env. Kept for existing non-OAuth
+//      clients (e.g. a repo-committed .mcp.json using a static bearer token).
+//   3. Open mode: no MCP_API_KEY configured at all. DB URL from header or env.
 
-function authenticate(req: Request, res: Response, next: NextFunction) {
-  if (!MCP_API_KEY) return next();
-
-  const authHeader = req.headers.authorization;
-  const key = authHeader?.startsWith('Bearer ')
-    ? authHeader.slice(7)
-    : (req.headers['x-api-key'] as string | undefined);
-
-  if (!key) { res.status(401).json({ error: 'Missing API key' }); return; }
-  if (key !== MCP_API_KEY) { res.status(403).json({ error: 'Invalid API key' }); return; }
-
-  next();
+function challenge401(req: Request, res: Response, description: string) {
+  const base = getBaseUrl(req);
+  res.set(
+    'WWW-Authenticate',
+    `Bearer realm="postgres-mcp", error="invalid_token", error_description="${description}", resource_metadata="${base}/.well-known/oauth-protected-resource"`
+  );
+  res.status(401).json({ error: 'unauthorized', error_description: description });
 }
 
-function resolveDatabaseUrl(req: Request): string | null {
-  return (req.headers['x-database-url'] as string | undefined)
-    ?? process.env.DATABASE_URL
-    ?? null;
+function authenticateAndResolveDatabaseUrl(req: Request, res: Response): string | null {
+  const bearer = req.headers.authorization?.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7).trim()
+    : undefined;
+
+  // 1. OAuth-issued token?
+  if (bearer) {
+    const databaseUrl = lookupAccessToken(bearer);
+    if (databaseUrl) return databaseUrl;
+  }
+
+  // 2. Legacy static MCP_API_KEY + X-Database-URL header / DATABASE_URL env
+  if (MCP_API_KEY) {
+    const key = bearer ?? (req.headers['x-api-key'] as string | undefined);
+    if (!key) { challenge401(req, res, 'missing credentials'); return null; }
+    if (key !== MCP_API_KEY) { challenge401(req, res, 'invalid token'); return null; }
+    const databaseUrl = (req.headers['x-database-url'] as string | undefined) ?? process.env.DATABASE_URL;
+    if (!databaseUrl) { res.status(400).json({ error: 'No database URL. Set DATABASE_URL env or pass X-Database-URL header.' }); return null; }
+    return databaseUrl;
+  }
+
+  // 3. Explicit opt-in open mode for local dev ONLY. With OAuth mounted, the
+  // old "no MCP_API_KEY == fully open" default is no longer safe — a server
+  // meant to require OAuth should never silently accept unauthenticated
+  // requests just because a legacy env var happens to be unset. Requires
+  // deliberately setting MCP_ALLOW_OPEN=1, never the default.
+  if (process.env.MCP_ALLOW_OPEN === '1') {
+    const databaseUrl = (req.headers['x-database-url'] as string | undefined) ?? process.env.DATABASE_URL;
+    if (databaseUrl) return databaseUrl;
+  }
+
+  challenge401(req, res, 'no credentials - authenticate via OAuth');
+  return null;
 }
 
 // ─── Express app ──────────────────────────────────────────────────────────────
 
 const app = express();
+app.set('trust proxy', true); // Railway/any reverse proxy sets x-forwarded-* — required for correct base URLs and PKCE redirect matching
 app.use(express.json());
+
+// OAuth endpoints (must be mounted before /mcp so 401 challenges point clients here).
+mountOAuth(app);
 
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
     server: 'postgres',
-    version: '1.0.0',
-    auth: MCP_API_KEY ? 'enabled' : 'disabled',
+    version: '1.1.0',
+    auth: MCP_API_KEY ? 'enabled (legacy static key)' : 'disabled (legacy path open)',
+    oauth: 'enabled',
     mode: process.env.DATABASE_URL ? 'single-db (env)' : 'multi-db (x-database-url header)',
     pools: pools.size,
   });
 });
 
-app.post('/mcp', authenticate, async (req: Request, res: Response, next: NextFunction) => {
-  const databaseUrl = resolveDatabaseUrl(req);
-
-  if (!databaseUrl) {
-    res.status(400).json({ error: 'No database URL. Set DATABASE_URL env or pass X-Database-URL header.' });
-    return;
-  }
+app.post('/mcp', async (req: Request, res: Response, next: NextFunction) => {
+  const databaseUrl = authenticateAndResolveDatabaseUrl(req, res);
+  if (!databaseUrl) return; // response already sent
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
@@ -178,11 +213,19 @@ app.post('/mcp', authenticate, async (req: Request, res: Response, next: NextFun
   }
 });
 
-app.get('/mcp', authenticate, (_req, res) => res.status(405).json({ error: 'Use POST /mcp' }));
-app.delete('/mcp', authenticate, (_req, res) => res.status(405).json({ error: 'Stateless mode — no sessions' }));
+app.get('/mcp', (req, res) => {
+  // MCP clients often probe GET first; return 401 so they discover OAuth metadata.
+  if (!authenticateAndResolveDatabaseUrl(req, res)) return;
+  res.status(405).json({ error: 'Use POST /mcp' });
+});
+
+app.delete('/mcp', (req, res) => {
+  if (!authenticateAndResolveDatabaseUrl(req, res)) return;
+  res.status(405).json({ error: 'Stateless mode — no sessions' });
+});
 
 app.listen(PORT, () => {
-  console.log(`postgres running on http://0.0.0.0:${PORT}`);
-  console.log(`  Auth: ${MCP_API_KEY ? 'API key required' : 'OPEN (set MCP_API_KEY to secure)'}`);
+  console.log(`postgres-mcp running on http://0.0.0.0:${PORT}`);
+  console.log(`  Auth: OAuth enabled${MCP_API_KEY ? ' + legacy static key' : ''}`);
   console.log(`  DB mode: ${process.env.DATABASE_URL ? 'single-db (env)' : 'multi-db (X-Database-URL header)'}`);
 });
